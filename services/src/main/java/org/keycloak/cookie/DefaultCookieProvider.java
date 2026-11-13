@@ -1,36 +1,42 @@
 package org.keycloak.cookie;
 
+import java.util.Map;
+
 import jakarta.ws.rs.core.Cookie;
 import jakarta.ws.rs.core.NewCookie;
-import org.jboss.logging.Logger;
-import org.keycloak.models.KeycloakContext;
 
-import java.util.Map;
+import org.keycloak.models.KeycloakContext;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.utils.SecureContextResolver;
+
+import org.jboss.logging.Logger;
+
 public class DefaultCookieProvider implements CookieProvider {
 
     private static final Logger logger = Logger.getLogger(DefaultCookieProvider.class);
 
-    private final KeycloakContext context;
+    private final KeycloakSession session;
 
-    private CookiePathResolver pathResolver;
+    private final CookiePathResolver pathResolver;
 
-    private CookieSecureResolver secureResolver;
+    private final boolean secure;
+    private boolean warned;
 
     private final Map<String, Cookie> cookies;
 
-    private final boolean sameSiteLegacyEnabled;
+    public DefaultCookieProvider(KeycloakSession session) {
+        KeycloakContext context = session.getContext();
 
-    public DefaultCookieProvider(KeycloakContext context, boolean sameSiteLegacyEnabled) {
-        this.context = context;
+        this.session = session;
         this.cookies = context.getRequestHeaders().getCookies();
         this.pathResolver = new CookiePathResolver(context);
-        this.secureResolver = new CookieSecureResolver(context, sameSiteLegacyEnabled);
-        this.sameSiteLegacyEnabled = sameSiteLegacyEnabled;
+        this.secure = SecureContextResolver.isSecureContext(session);
 
         if (logger.isTraceEnabled()) {
-            String cookieNames = String.join(", ", this.cookies.keySet());
-            logger.tracef("Path: %s, cookies: %s", context.getUri().getRequestUri().getRawPath(), cookieNames);
+            logger.tracef("Received cookies: %s, path: %s", String.join(", ", this.cookies.keySet()), context.getUri().getRequestUri().getRawPath());
         }
+
+        expireOldUnusedCookies();
     }
 
     @Override
@@ -46,7 +52,10 @@ public class DefaultCookieProvider implements CookieProvider {
     public void set(CookieType cookieType, String value, int maxAge) {
         String name = cookieType.getName();
         NewCookie.SameSite sameSite = cookieType.getScope().getSameSite();
-        boolean secure = secureResolver.resolveSecure(sameSite);
+        if (NewCookie.SameSite.NONE.equals(sameSite) && !secure) {
+            sameSite = NewCookie.SameSite.LAX;
+        }
+
         String path = pathResolver.resolvePath(cookieType);
         boolean httpOnly = cookieType.getScope().isHttpOnly();
 
@@ -60,66 +69,46 @@ public class DefaultCookieProvider implements CookieProvider {
                 .sameSite(sameSite)
                 .build();
 
-        context.getHttpResponse().setCookieIfAbsent(newCookie);
+        session.getContext().getHttpResponse().setCookieIfAbsent(newCookie);
 
         logger.tracef("Setting cookie: name: %s, path: %s, same-site: %s, secure: %s, http-only: %s, max-age: %d", name, path, sameSite, secure, httpOnly, maxAge);
 
-        setSameSiteLegacy(cookieType, value, maxAge);
-    }
+        if (!secure && !warned) {
+            warned = true;
 
-    private void setSameSiteLegacy(CookieType cookieType, String value, int maxAge) {
-        if (sameSiteLegacyEnabled && cookieType.supportsSameSiteLegacy()) {
-            String legacyName = cookieType.getSameSiteLegacyName();
-            boolean legacySecure = secureResolver.resolveSecure(null);
-            String path = pathResolver.resolvePath(cookieType);
-            boolean httpOnly = cookieType.getScope().isHttpOnly();
+            StringBuilder warning = new StringBuilder("Non-secure context detected; cookies are not secured, and will not be available in cross-origin POST requests.");
 
-            NewCookie legacyCookie = new NewCookie.Builder(legacyName)
-                    .version(1)
-                    .value(value)
-                    .maxAge(maxAge)
-                    .path(path)
-                    .secure(legacySecure)
-                    .httpOnly(httpOnly)
-                    .build();
-            context.getHttpResponse().setCookieIfAbsent(legacyCookie);
+            String forwarded = session.getContext().getRequestHeaders().getHeaderString("Forwarded");
+            String xForwarded = session.getContext().getRequestHeaders().getHeaderString("X-Forwarded-Proto");
 
-            logger.tracef("Setting legacy cookie: name: %s, path: %s, same-site: %s, secure: %s, http-only: %s, max-age: %d", legacyName, path, null, legacySecure, httpOnly, maxAge);
-        } else if (cookieType.supportsSameSiteLegacy()) {
-            expireSameSiteLegacy(cookieType);
+            // if we are getting here then:
+            //   if passthrough or reencrypt, proxy-headers may be misconfigured
+            //   if edge, then proxy-headers should be set (there's hostname validation for this) but they are not set by the proxy server
+            //   not proxied, and not https (there's hostname validation for this)
+
+            if (forwarded != null || xForwarded != null) {
+                if (session.getContext().getHttpRequest().isProxyTrusted()) {
+                    warning.append(" Please review your proxy settings as the request appears to have originated from a proxy.");
+                } else {
+                    warning.append(" This is likely due to the proxy not being trusted.");
+                }
+            } else {
+                warning.append(" Please review whether this direct HTTP usage is expected.");
+            }
+
+            logger.warnf(warning.toString());
         }
     }
 
     @Override
     public String get(CookieType cookieType) {
         Cookie cookie = cookies.get(cookieType.getName());
-        if (cookie == null) {
-            cookie = getSameSiteLegacyCookie(cookieType);
-        }
         return cookie != null ? cookie.getValue() : null;
-    }
-
-    private Cookie getSameSiteLegacyCookie(CookieType cookieType) {
-        if (cookieType.supportsSameSiteLegacy()) {
-            return cookies.get(cookieType.getSameSiteLegacyName());
-        } else {
-            return null;
-        }
     }
 
     @Override
     public void expire(CookieType cookieType) {
-        expire(cookieType.getName(), cookieType);
-        expireSameSiteLegacy(cookieType);
-    }
-
-    private void expireSameSiteLegacy(CookieType cookieType) {
-        if (cookieType.supportsSameSiteLegacy()) {
-            expire(cookieType.getSameSiteLegacyName(), cookieType);
-        }
-    }
-
-    private void expire(String cookieName, CookieType cookieType) {
+        String cookieName = cookieType.getName();
         Cookie cookie = cookies.get(cookieName);
         if (cookie != null) {
             String path = pathResolver.resolvePath(cookieType);
@@ -129,9 +118,15 @@ public class DefaultCookieProvider implements CookieProvider {
                     .maxAge(CookieMaxAge.EXPIRED)
                     .build();
 
-            context.getHttpResponse().setCookieIfAbsent(newCookie);
+            session.getContext().getHttpResponse().setCookieIfAbsent(newCookie);
 
             logger.tracef("Expiring cookie: name: %s, path: %s", cookie.getName(), path);
+        }
+    }
+
+    private void expireOldUnusedCookies() {
+        for (CookieType cookieType : CookieType.OLD_UNUSED_COOKIES) {
+            expire(cookieType);
         }
     }
 

@@ -1,9 +1,10 @@
 package org.keycloak.testsuite.adapter.servlet;
 
-import org.jboss.arquillian.container.test.api.Deployment;
-import org.jboss.arquillian.graphene.page.Page;
-import org.jboss.shrinkwrap.api.spec.WebArchive;
-import org.junit.Test;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
+import javax.xml.datatype.XMLGregorianCalendar;
+
+import org.keycloak.common.Profile;
 import org.keycloak.dom.saml.v2.SAML2Object;
 import org.keycloak.dom.saml.v2.assertion.AuthnStatementType;
 import org.keycloak.dom.saml.v2.assertion.StatementAbstractType;
@@ -11,6 +12,7 @@ import org.keycloak.dom.saml.v2.protocol.ResponseType;
 import org.keycloak.models.utils.SessionTimeoutHelper;
 import org.keycloak.saml.common.constants.JBossSAMLURIConstants;
 import org.keycloak.saml.processing.core.saml.v2.util.XMLTimeUtil;
+import org.keycloak.testsuite.ProfileAssume;
 import org.keycloak.testsuite.adapter.filter.AdapterActionsFilter;
 import org.keycloak.testsuite.adapter.page.Employee2Servlet;
 import org.keycloak.testsuite.arquillian.annotation.AppServerContainer;
@@ -19,17 +21,19 @@ import org.keycloak.testsuite.util.Matchers;
 import org.keycloak.testsuite.util.SamlClient;
 import org.keycloak.testsuite.utils.arquillian.ContainerConstants;
 
-import javax.xml.datatype.XMLGregorianCalendar;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicReference;
+import org.jboss.arquillian.container.test.api.Deployment;
+import org.jboss.arquillian.graphene.page.Page;
+import org.jboss.shrinkwrap.api.spec.WebArchive;
+import org.junit.Test;
 
+import static org.keycloak.testsuite.saml.AbstractSamlTest.REALM_NAME;
+import static org.keycloak.testsuite.util.Matchers.bodyHC;
+
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.allOf;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.is;
 import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.keycloak.testsuite.saml.AbstractSamlTest.REALM_NAME;
-import static org.keycloak.testsuite.util.Matchers.bodyHC;
 
 
 @AppServerContainer(ContainerConstants.APP_SERVER_WILDFLY)
@@ -46,7 +50,7 @@ public class SAMLServletSessionTimeoutTest extends AbstractSAMLServletAdapterTes
     }
 
     private static final int SESSION_LENGTH_IN_SECONDS = 120;
-    private static final int KEYCLOAK_SESSION_TIMEOUT = 1922; /** 1800 session max + 120 {@link SessionTimeoutHelper#IDLE_TIMEOUT_WINDOW_SECONDS}  */
+    private static final int KEYCLOAK_SESSION_TIMEOUT = 1800 + (ProfileAssume.isFeatureEnabled(Profile.Feature.PERSISTENT_USER_SESSIONS) ? 0 : SessionTimeoutHelper.IDLE_TIMEOUT_WINDOW_SECONDS); /** 1800 session max + 120 {@link SessionTimeoutHelper#IDLE_TIMEOUT_WINDOW_SECONDS}  */
 
     private AtomicReference<String> sessionNotOnOrAfter = new AtomicReference<>();
 

@@ -17,7 +17,8 @@
 
 package org.keycloak.models.utils;
 
-import org.jboss.logging.Logger;
+import java.util.Optional;
+
 import org.keycloak.forms.login.LoginFormsProvider;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.Constants;
@@ -25,7 +26,7 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.sessions.AuthenticationSessionModel;
 
-import java.util.Optional;
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -43,7 +44,7 @@ public class SystemClientUtil {
     public static ClientModel getSystemClient(RealmModel realm) {
         // Try to return builtin "account" client first
         ClientModel client = realm.getClientByClientId(Constants.ACCOUNT_MANAGEMENT_CLIENT_ID);
-        if (client != null) {
+        if (client != null && client.isEnabled()) {
             return client;
         }
 

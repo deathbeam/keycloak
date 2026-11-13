@@ -24,12 +24,13 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import org.infinispan.protostream.annotations.ProtoFactory;
-import org.infinispan.protostream.annotations.ProtoField;
-import org.infinispan.protostream.annotations.ProtoTypeId;
 import org.keycloak.marshalling.Marshalling;
 import org.keycloak.models.FederatedIdentityModel;
 import org.keycloak.models.cache.infinispan.UserCacheManager;
+
+import org.infinispan.protostream.annotations.ProtoFactory;
+import org.infinispan.protostream.annotations.ProtoField;
+import org.infinispan.protostream.annotations.ProtoTypeId;
 
 /**
  * Used when user added/removed
@@ -70,7 +71,7 @@ public class UserFullInvalidationEvent extends InvalidationEvent implements User
 
     @ProtoFactory
     static UserFullInvalidationEvent protoFactory(String id, String username, String email, String realmId, boolean identityFederationEnabled, Map<String, String> federatedIdentities) {
-        return new UserFullInvalidationEvent(id, username, Marshalling.emptyStringToNull(email), realmId, identityFederationEnabled, federatedIdentities);
+        return new UserFullInvalidationEvent(id, username, email, realmId, identityFederationEnabled, federatedIdentities);
     }
 
     public Map<String, String> getFederatedIdentities() {

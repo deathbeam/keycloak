@@ -3,6 +3,7 @@ import {
   ActionGroup,
   AlertVariant,
   Button,
+  FormGroup,
   PageSection,
 } from "@patternfly/react-core";
 import { useState } from "react";
@@ -11,13 +12,15 @@ import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { NumberControl } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../../components/form/FormAccess";
 import { TimeSelectorControl } from "../../components/time-selector/TimeSelectorControl";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { toClients } from "../routes/Clients";
 import { AccessTokenDialog } from "./AccessTokenDialog";
+import { MultiLineInput } from "../../components/multi-line-input/MultiLineInput";
+import { HelpItem } from "@keycloak/keycloak-ui-shared";
 
 export default function CreateInitialAccessToken() {
   const { adminClient } = useAdminClient();
@@ -55,7 +58,7 @@ export default function CreateInitialAccessToken() {
           toggleDialog={() => {
             setToken("");
             addAlert(t("tokenSaveSuccess"), AlertVariant.success);
-            navigate(toClients({ realm, tab: "initial-access-token" }));
+            void navigate(toClients({ realm, tab: "initial-access-token" }));
           }}
         />
       )}
@@ -85,10 +88,29 @@ export default function CreateInitialAccessToken() {
             label={t("count")}
             labelIcon={t("countHelp")}
             controller={{
+              rules: {
+                min: 1,
+              },
               defaultValue: 1,
             }}
-            min={1}
           />
+          <FormGroup
+            label={t("webOrigins")}
+            fieldId="kc-web-origins"
+            labelIcon={
+              <HelpItem
+                helpText={t("webOriginsHelp")}
+                fieldLabelId="webOrigins"
+              />
+            }
+          >
+            <MultiLineInput
+              id="kc-web-origins"
+              name="webOrigins"
+              aria-label={t("webOrigins")}
+              addButtonLabel="addWebOrigins"
+            />
+          </FormGroup>
           <ActionGroup>
             <Button
               variant="primary"

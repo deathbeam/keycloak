@@ -1,4 +1,9 @@
 import {
+  ContinueCancelModal,
+  label,
+  useEnvironment,
+} from "@keycloak/keycloak-ui-shared";
+import {
   Button,
   DataList,
   DataListContent,
@@ -23,11 +28,8 @@ import {
 } from "@patternfly/react-icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  ContinueCancelModal,
-  useAlerts,
-  useEnvironment,
-} from "@keycloak/keycloak-ui-shared";
+
+import { AccountEnvironment } from "..";
 import { deleteSession, getDevices } from "../api/methods";
 import {
   ClientRepresentation,
@@ -35,14 +37,14 @@ import {
   SessionRepresentation,
 } from "../api/representations";
 import { Page } from "../components/page/Page";
-import { TFuncKey } from "../i18n";
 import { formatDate } from "../utils/formatDate";
+import { useAccountAlerts } from "../utils/useAccountAlerts";
 import { usePromise } from "../utils/usePromise";
 
 export const DeviceActivity = () => {
   const { t } = useTranslation();
-  const context = useEnvironment();
-  const { addAlert, addError } = useAlerts();
+  const context = useEnvironment<AccountEnvironment>();
+  const { addAlert, addError } = useAccountAlerts();
 
   const [devices, setDevices] = useState<DeviceRepresentation[]>();
   const [key, setKey] = useState(0);
@@ -68,7 +70,7 @@ export const DeviceActivity = () => {
 
   const signOutAll = async () => {
     await deleteSession(context);
-    context.keycloak.logout();
+    await context.keycloak.logout();
   };
 
   const signOutSession = async (
@@ -82,7 +84,7 @@ export const DeviceActivity = () => {
       );
       refresh();
     } catch (error) {
-      addError(t("errorSignOutMessage", { error }).toString());
+      addError("errorSignOutMessage", error);
     }
   };
 
@@ -91,7 +93,7 @@ export const DeviceActivity = () => {
     clients.forEach((client, index) => {
       let clientName: string;
       if (client.clientName !== "") {
-        clientName = t(client.clientName as TFuncKey);
+        clientName = label(t, client.clientName);
       } else {
         clientName = client.clientId;
       }
@@ -210,7 +212,10 @@ export const DeviceActivity = () => {
                             {t("lastAccessedOn")}
                           </DescriptionListTerm>
                           <DescriptionListDescription>
-                            {formatDate(new Date(session.lastAccess * 1000))}
+                            {formatDate(
+                              new Date(session.lastAccess * 1000),
+                              context.environment.locale,
+                            )}
                           </DescriptionListDescription>
                         </DescriptionListGroup>
                         <DescriptionListGroup>
@@ -226,7 +231,10 @@ export const DeviceActivity = () => {
                             {t("started")}
                           </DescriptionListTerm>
                           <DescriptionListDescription>
-                            {formatDate(new Date(session.started * 1000))}
+                            {formatDate(
+                              new Date(session.started * 1000),
+                              context.environment.locale,
+                            )}
                           </DescriptionListDescription>
                         </DescriptionListGroup>
                         <DescriptionListGroup>
@@ -234,7 +242,10 @@ export const DeviceActivity = () => {
                             {t("expires")}
                           </DescriptionListTerm>
                           <DescriptionListDescription>
-                            {formatDate(new Date(session.expires * 1000))}
+                            {formatDate(
+                              new Date(session.expires * 1000),
+                              context.environment.locale,
+                            )}
                           </DescriptionListDescription>
                         </DescriptionListGroup>
                       </DescriptionList>

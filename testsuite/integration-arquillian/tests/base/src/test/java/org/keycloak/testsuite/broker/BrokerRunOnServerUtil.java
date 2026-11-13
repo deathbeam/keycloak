@@ -16,8 +16,6 @@
  */
 package org.keycloak.testsuite.broker;
 
-import static org.junit.Assert.assertEquals;
-
 import org.keycloak.authentication.authenticators.broker.IdpAutoLinkAuthenticatorFactory;
 import org.keycloak.authentication.authenticators.browser.OTPFormAuthenticatorFactory;
 import org.keycloak.authentication.authenticators.browser.PasswordFormFactory;
@@ -30,9 +28,12 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
+import org.keycloak.models.session.UserSessionPersisterProvider;
+import org.keycloak.testframework.remote.providers.runonserver.RunOnServer;
 import org.keycloak.testsuite.client.KeycloakTestingClient;
-import org.keycloak.testsuite.runonserver.RunOnServer;
 import org.keycloak.testsuite.util.FlowUtil;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
@@ -60,9 +61,9 @@ final class BrokerRunOnServerUtil {
             execution.setAuthenticatorFlow(false);
             realm.addAuthenticatorExecution(execution);
 
-            IdentityProviderModel idp = realm.getIdentityProviderByAlias(idpAlias);
+            IdentityProviderModel idp = session.identityProviders().getByAlias(idpAlias);
             idp.setPostBrokerLoginFlowId(postBrokerFlow.getId());
-            realm.updateIdentityProvider(idp);
+            session.identityProviders().update(idp);
         };
     }
 
@@ -70,9 +71,9 @@ final class BrokerRunOnServerUtil {
         return session -> {
             RealmModel realm = session.getContext().getRealm();
 
-            IdentityProviderModel idp = realm.getIdentityProviderByAlias(idpAlias);
+            IdentityProviderModel idp = session.identityProviders().getByAlias(idpAlias);
             idp.setPostBrokerLoginFlowId(null);
-            realm.updateIdentityProvider(idp);
+            session.identityProviders().update(idp);
         };
     }
 
@@ -123,9 +124,9 @@ final class BrokerRunOnServerUtil {
             execution2.setParentFlow(newFlow.getId());
             execution2 = appRealm.addAuthenticatorExecution(execution2);
 
-            IdentityProviderModel idp = appRealm.getIdentityProviderByAlias(idpAlias);
+            IdentityProviderModel idp = session.identityProviders().getByAlias(idpAlias);
             idp.setFirstBrokerLoginFlowId(newFlow.getId());
-            appRealm.updateIdentityProvider(idp);
+            session.identityProviders().update(idp);
         });
     }
 
@@ -165,9 +166,9 @@ final class BrokerRunOnServerUtil {
             execution.setParentFlow(newFlow.getId());
             appRealm.addAuthenticatorExecution(execution);
 
-            IdentityProviderModel idp = appRealm.getIdentityProviderByAlias(idpAlias);
+            IdentityProviderModel idp = session.identityProviders().getByAlias(idpAlias);
             idp.setFirstBrokerLoginFlowId(newFlow.getId());
-            appRealm.updateIdentityProvider(idp);
+            session.identityProviders().update(idp);
         };
     }
 
@@ -181,10 +182,9 @@ final class BrokerRunOnServerUtil {
     }
 
     static RunOnServer removeBrokerExpiredSessions() {
-        return (RunOnServer) session -> {
+        return session -> {
             RealmModel realm = session.getContext().getRealm();
-            session.sessions().removeExpired(realm);
-            session.authenticationSessions().removeExpired(realm);
+            session.getProvider(UserSessionPersisterProvider.class).removeExpired(realm);
         };
     }
 

@@ -17,12 +17,34 @@
 
 package org.keycloak.crypto.def;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.math.BigInteger;
+import java.security.GeneralSecurityException;
+import java.security.KeyPair;
+import java.security.PrivateKey;
+import java.security.SecureRandom;
+import java.security.cert.CertificateException;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.Calendar;
+import java.util.Collections;
+import java.util.Date;
+import java.util.LinkedList;
+import java.util.List;
+
+import org.keycloak.common.crypto.CertificateUtilsProvider;
+import org.keycloak.common.util.BouncyIntegration;
+import org.keycloak.crypto.JavaAlgorithm;
+
 import org.bouncycastle.asn1.ASN1InputStream;
 import org.bouncycastle.asn1.ASN1ObjectIdentifier;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.DERIA5String;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x500.X500NameBuilder;
+import org.bouncycastle.asn1.x500.style.BCStyle;
 import org.bouncycastle.asn1.x509.BasicConstraints;
 import org.bouncycastle.asn1.x509.CRLDistPoint;
 import org.bouncycastle.asn1.x509.CertificatePolicies;
@@ -47,24 +69,6 @@ import org.bouncycastle.cert.jcajce.JcaX509ExtensionUtils;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.OperatorCreationException;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
-import org.keycloak.common.util.BouncyIntegration;
-import org.keycloak.common.crypto.CertificateUtilsProvider;
-
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.math.BigInteger;
-import java.security.GeneralSecurityException;
-import java.security.KeyPair;
-import java.security.PrivateKey;
-import java.security.SecureRandom;
-import java.security.cert.CertificateException;
-import java.security.cert.X509Certificate;
-import java.util.Arrays;
-import java.util.Calendar;
-import java.util.Collections;
-import java.util.Date;
-import java.util.LinkedList;
-import java.util.List;
 
 /**
  * The Class CertificateUtils provides utility functions for generation of V1 and V3 {@link X509Certificate}
@@ -83,15 +87,14 @@ public class BCCertificateUtilsProvider implements CertificateUtilsProvider {
      * @param caCert       the CA certificate
      * @param subject      the subject name
      * @return the x509 certificate
-     * @throws Exception the exception
      */
     public X509Certificate generateV3Certificate(KeyPair keyPair, PrivateKey caPrivateKey, X509Certificate caCert,
-                                                 String subject) throws Exception {
+                                                 String subject) {
         try {
-            X500Name subjectDN = new X500Name("CN=" + subject);
+            X500Name subjectDN = new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, subject).build();
 
             // Serial Number
-            SecureRandom random = SecureRandom.getInstance("SHA1PRNG");
+            SecureRandom random = new SecureRandom();
             BigInteger serialNumber = BigInteger.valueOf(Math.abs(random.nextInt()));
 
             // Validity
@@ -129,7 +132,17 @@ public class BCCertificateUtilsProvider implements CertificateUtilsProvider {
             certGen.addExtension(Extension.basicConstraints, true, new BasicConstraints(0));
 
             // Content Signer
-            ContentSigner sigGen = new JcaContentSignerBuilder("SHA1WithRSAEncryption").setProvider(BouncyIntegration.PROVIDER).build(caPrivateKey);
+            ContentSigner sigGen;
+            switch (caCert.getPublicKey().getAlgorithm())
+            {
+                case "EC":
+                    sigGen = new JcaContentSignerBuilder("SHA256WithECDSA").setProvider(BouncyIntegration.PROVIDER)
+                                                                               .build(caPrivateKey);
+                    break;
+                default:
+                    sigGen = new JcaContentSignerBuilder("SHA256WithRSAEncryption").setProvider(BouncyIntegration.PROVIDER)
+                                                                                       .build(caPrivateKey);
+            }
 
             // Certificate
             return new JcaX509CertificateConverter().setProvider(BouncyIntegration.PROVIDER).getCertificate(certGen.build(sigGen));
@@ -151,12 +164,16 @@ public class BCCertificateUtilsProvider implements CertificateUtilsProvider {
     }
 
     public X509Certificate generateV1SelfSignedCertificate(KeyPair caKeyPair, String subject, BigInteger serialNumber) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.add(Calendar.YEAR, 10);
+        return generateV1SelfSignedCertificate(caKeyPair, subject, serialNumber, calendar.getTime());
+    }
+
+    @Override
+    public X509Certificate generateV1SelfSignedCertificate(KeyPair caKeyPair, String subject, BigInteger serialNumber, Date validityEndDate) {
         try {
-            X500Name subjectDN = new X500Name("CN=" + subject);
+            X500Name subjectDN = new X500NameBuilder(BCStyle.INSTANCE).addRDN(BCStyle.CN, subject).build();
             Date validityStartDate = new Date(System.currentTimeMillis() - 100000);
-            Calendar calendar = Calendar.getInstance();
-            calendar.add(Calendar.YEAR, 10);
-            Date validityEndDate = new Date(calendar.getTime().getTime());
             SubjectPublicKeyInfo subPubKeyInfo = SubjectPublicKeyInfo.getInstance(caKeyPair.getPublic().getEncoded());
 
             X509v1CertificateBuilder builder = new X509v1CertificateBuilder(subjectDN, serialNumber, validityStartDate,
@@ -184,11 +201,17 @@ public class BCCertificateUtilsProvider implements CertificateUtilsProvider {
                             .setProvider(BouncyIntegration.PROVIDER);
                     break;
                 }
+                case "EC":
                 case "ECDSA": {
                     signerBuilder = new JcaContentSignerBuilder("SHA256WithECDSA")
                             .setProvider(BouncyIntegration.PROVIDER);
                     break;
-
+                }
+                case JavaAlgorithm.Ed25519:
+                case JavaAlgorithm.Ed448: {
+                    signerBuilder = new JcaContentSignerBuilder(privateKey.getAlgorithm())
+                            .setProvider(BouncyIntegration.PROVIDER);
+                    break;
                 }
                 default: {
                     throw new RuntimeException(String.format("Keytype %s is not supported.", privateKey.getAlgorithm()));

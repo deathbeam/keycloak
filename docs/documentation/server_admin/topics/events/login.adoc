@@ -1,4 +1,5 @@
 
+[#auditing-user-events]
 === Auditing user events
 
 You can record and view every event that affects users. {project_name} triggers login events for actions such as successful user login, a user entering an incorrect password, or a user account updating. By default, {project_name} does not store or display events in the Admin Console. Only the error events are logged to the Admin Console and the server’s log file.
@@ -77,6 +78,32 @@ image:images/search-user-event.png[Search user event]
 
 |===
 
+*Identity Brokering:*
+
+[cols="2",options="header"]
+|===
+|Event |Description
+|Federated identity link override
+|An existing Federated identity link was overridden
+
+|Federated identity link override error
+|Error occurred when trying to override an existing Federated identity link
+
+|===
+
+*OAuth:*
+
+[cols="2",options="header"]
+|===
+|Event |Description
+|OAuth2 extension grant
+|OAuth2 grant was executed
+
+|OAuth2 extension grant error
+|Error occurred during OAuth2 grant execution
+
+|===
+
 *Account events:*
 
 [cols="2",options="header"]
@@ -97,14 +124,20 @@ image:images/search-user-event.png[Search user event]
 |Send Password Reset
 |{project_name} sends a password reset email.
 
-|Update Password
+|Update Password (deprecated)
 |The password for an account changes.
 
-|Update TOTP
+|Update Credential
+|The password or (time-based) one-time Password (OTP/TOTP) settings for an account changes.
+
+|Update TOTP (deprecated)
 |The Time-based One-time Password (TOTP) settings for an account changes.
 
-|Remove TOTP
+|Remove TOTP (deprecated)
 |{project_name} removes TOTP from an account.
+
+|Remove Credential
+|{project_name} removes a credential from an account.
 
 |Send Verify Email
 |{project_name} sends an email verification email.
@@ -152,7 +185,7 @@ To change the log level used by the Logging Event listener, add the following:
 
 [source,bash]
 ----
-bin/kc.[sh|bat] start --spi-events-listener-jboss-logging-success-level=info --spi-events-listener-jboss-logging-error-level=error
+bin/kc.[sh|bat] start --spi-events-listener--jboss-logging--success-level=info --spi-events-listener--jboss-logging--error-level=error
 ----
 
 The valid values for log levels are `debug`, `info`, `warn`, `error`, and `fatal`.
@@ -165,6 +198,13 @@ The Email Event Listener sends a message to the user's email address when an eve
 * Update Password.
 * Update Time-based One-time Password (TOTP).
 * Remove One-time Password (OTP).
+* Update Credential.
+* Remove Credential.
+
+Below are the optional events you can configure:
+
+* User disabled by permanent lockout.
+* User disabled by temporary lockout.
 
 The following conditions need to be met for an email to be sent:
 
@@ -187,10 +227,15 @@ To enable the Email Listener:
 .Event listeners
 image:images/event-listeners.png[Event listeners]
 
-You can exclude events by using the `--spi-events-listener-email-exclude-events` argument. For example:
+You can exclude events by using the `+--spi-events-listener--email--exclude-events+` argument. For example:
 
 [source,bash]
 ----
-kc.[sh|bat] --spi-events-listener-email-exclude-events=UPDATE_TOTP,REMOVE_TOTP
+kc.[sh|bat] --spi-events-listener--email--exclude-events=UPDATE_CREDENTIAL,REMOVE_CREDENTIAL
 ----
 
+To enable optional events, use the following command:
+[source,bash]
+----
+kc.[sh|bat] --spi-events-listener--email--include-events=USER_DISABLED_BY_TEMPORARY_LOCKOUT_ERROR,USER_DISABLED_BY_PERMANENT_LOCKOUT
+----

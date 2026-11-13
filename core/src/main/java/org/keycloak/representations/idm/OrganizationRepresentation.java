@@ -18,11 +18,11 @@
 package org.keycloak.representations.idm;
 
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.HashSet;
 import java.util.Set;
 
 public class OrganizationRepresentation {
@@ -32,10 +32,12 @@ public class OrganizationRepresentation {
     private String alias;
     private boolean enabled = true;
     private String description;
+    private String redirectUrl;
     private Map<String, List<String>> attributes;
     private Set<OrganizationDomainRepresentation> domains;
-    private List<UserRepresentation> members;
+    private List<MemberRepresentation> members;
     private List<IdentityProviderRepresentation> identityProviders;
+    private List<GroupRepresentation> groups;
 
     public String getId() {
         return id;
@@ -77,6 +79,22 @@ public class OrganizationRepresentation {
         this.description = description;
     }
 
+    /**
+     * @deprecated Use {@code client_id} on invitation endpoints instead.
+     */
+    @Deprecated
+    public String getRedirectUrl() {
+        return redirectUrl;
+    }
+
+    /**
+     * @deprecated Use {@code client_id} on invitation endpoints instead.
+     */
+    @Deprecated
+    public void setRedirectUrl(String redirectUrl) {
+        this.redirectUrl = redirectUrl;
+    }
+
     public Map<String, List<String>> getAttributes() {
         return attributes;
     }
@@ -87,12 +105,16 @@ public class OrganizationRepresentation {
 
     public OrganizationRepresentation singleAttribute(String name, String value) {
         if (this.attributes == null) attributes = new HashMap<>();
-        attributes.put(name, Arrays.asList(value));
+        attributes.put(name, Collections.singletonList(value));
         return this;
     }
 
     public Set<OrganizationDomainRepresentation> getDomains() {
         return domains;
+    }
+
+    public void setDomains(Set<OrganizationDomainRepresentation> domains) {
+        this.domains = domains;
     }
 
     public OrganizationDomainRepresentation getDomain(String name) {
@@ -119,19 +141,19 @@ public class OrganizationRepresentation {
         getDomains().remove(domain);
     }
 
-    public List<UserRepresentation> getMembers() {
+    public List<MemberRepresentation> getMembers() {
         return members;
     }
 
-    public void setMembers(List<UserRepresentation> members) {
+    public void setMembers(List<MemberRepresentation> members) {
         this.members = members;
     }
 
-    public void addMember(UserRepresentation user) {
+    public void addMember(MemberRepresentation member) {
         if (members == null) {
             members = new ArrayList<>();
         }
-        members.add(user);
+        members.add(member);
     }
 
     public List<IdentityProviderRepresentation> getIdentityProviders() {
@@ -147,6 +169,21 @@ public class OrganizationRepresentation {
             identityProviders = new ArrayList<>();
         }
         identityProviders.add(idp);
+    }
+
+    public List<GroupRepresentation> getGroups() {
+        return groups;
+    }
+
+    public void setGroups(List<GroupRepresentation> groups) {
+        this.groups = groups;
+    }
+
+    public void addGroup(GroupRepresentation group) {
+        if (groups == null) {
+            groups = new ArrayList<>();
+        }
+        groups.add(group);
     }
 
     @Override

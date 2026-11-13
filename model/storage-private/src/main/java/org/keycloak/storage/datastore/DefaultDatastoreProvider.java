@@ -20,8 +20,10 @@ package org.keycloak.storage.datastore;
 import org.keycloak.models.ClientProvider;
 import org.keycloak.models.ClientScopeProvider;
 import org.keycloak.models.GroupProvider;
+import org.keycloak.models.IdentityProviderStorageProvider;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmProvider;
+import org.keycloak.models.RevokedTokenProvider;
 import org.keycloak.models.RoleProvider;
 import org.keycloak.models.SingleUseObjectProvider;
 import org.keycloak.models.UserLoginFailureProvider;
@@ -35,9 +37,9 @@ import org.keycloak.storage.ClientStorageManager;
 import org.keycloak.storage.DatastoreProvider;
 import org.keycloak.storage.ExportImportManager;
 import org.keycloak.storage.GroupStorageManager;
-import org.keycloak.storage.StoreManagers;
 import org.keycloak.storage.MigrationManager;
 import org.keycloak.storage.RoleStorageManager;
+import org.keycloak.storage.StoreManagers;
 import org.keycloak.storage.UserStorageManager;
 import org.keycloak.storage.federated.UserFederatedStorageProvider;
 
@@ -49,10 +51,12 @@ public class DefaultDatastoreProvider implements DatastoreProvider, StoreManager
     private ClientProvider clientProvider;
     private ClientScopeProvider clientScopeProvider;
     private GroupProvider groupProvider;
+    private IdentityProviderStorageProvider identityProviderStorageProvider;
     private UserLoginFailureProvider userLoginFailureProvider;
     private RealmProvider realmProvider;
     private RoleProvider roleProvider;
     private SingleUseObjectProvider singleUseObjectProvider;
+    private RevokedTokenProvider revokedTokenProvider;
     private UserProvider userProvider;
     private UserSessionProvider userSessionProvider;
 
@@ -211,6 +215,14 @@ public class DefaultDatastoreProvider implements DatastoreProvider, StoreManager
     }
 
     @Override
+    public IdentityProviderStorageProvider identityProviders() {
+        if (identityProviderStorageProvider == null) {
+            identityProviderStorageProvider = session.getProvider(IdentityProviderStorageProvider.class);
+        }
+        return identityProviderStorageProvider;
+    }
+
+    @Override
     public UserLoginFailureProvider loginFailures() {
         if (userLoginFailureProvider == null) {
             userLoginFailureProvider = session.getProvider(UserLoginFailureProvider.class);
@@ -263,8 +275,16 @@ public class DefaultDatastoreProvider implements DatastoreProvider, StoreManager
         return new DefaultExportImportManager(session);
     }
 
+    @Override
+    public RevokedTokenProvider revokedTokens() {
+        if (revokedTokenProvider == null) {
+            revokedTokenProvider = session.getProvider(RevokedTokenProvider.class);
+        }
+        return revokedTokenProvider;
+    }
+
     public MigrationManager getMigrationManager() {
-        return new DefaultMigrationManager(session);
+        return new DefaultMigrationManager(session, factory.isAllowMigrateExistingDatabaseToSnapshot());
     }
 
 }

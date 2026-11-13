@@ -1,5 +1,5 @@
 - name: Get Ansible Control Host's public IP
-  shell: curl -ks --ipv4 https://ifconfig.me
+  shell: curl -fks --ipv4 https://ifconfig.me
   register: control_host_ip
   no_log: "{{ no_log_sensitive }}"
 
@@ -19,6 +19,13 @@
   register: group
   no_log: "{{ no_log_sensitive }}"
 
+- name: Delete existing key pair if it exists
+  amazon.aws.ec2_key:
+    region: '{{ region }}'
+    name: '{{ cluster_name }}'
+    state: absent
+  ignore_errors: true
+
 - name: Create Key
   amazon.aws.ec2_key:
     state: present
@@ -35,12 +42,29 @@
     mode: 0600
   no_log: "{{ no_log_sensitive }}"
 
-- name: Look up AMI '{{ ami_name }}'
+- name: Look up latest RHEL 9 AMI matching '{{ ami_name_pattern }}'
   amazon.aws.ec2_ami_info:
-    region: '{{ region}}'
+    region: '{{ region }}'
+    owners:
+      - '{{ ami_owner }}'
     filters:
-      name: '{{ ami_name }}'
+      name: '{{ ami_name_pattern }}'
+      architecture: x86_64
+      state: available
   register: ami_info
+
+- name: Fail if no AMI found
+  ansible.builtin.fail:
+    msg: "No AMI found matching '{{ ami_name_pattern }}' from owner {{ ami_owner }} in {{ region }}"
+  when: ami_info.images | length == 0
+
+- name: Select most recent AMI
+  set_fact:
+    selected_ami: "{{ (ami_info.images | sort(attribute='creation_date') | last) }}"
+
+- name: Show selected AMI
+  debug:
+    msg: "Using AMI {{ selected_ami.image_id }} ({{ selected_ami.name }}, created {{ selected_ami.creation_date }})"
 
 - name: Create {{ cluster_size }} EC2 Instances
   amazon.aws.ec2_instance:
@@ -49,7 +73,7 @@
     name: "{{ cluster_name }}"
     exact_count: "{{ cluster_size }}"
     instance_type: '{{ instance_type }}'
-    image_id: '{{ ami_info.images[0].image_id }}'
+    image_id: '{{ selected_ami.image_id }}'
     key_name: '{{ cluster_name }}'
     security_group: '{{ group.group_id }}'
     network:

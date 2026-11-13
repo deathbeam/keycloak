@@ -15,7 +15,7 @@ import { saveAs } from "file-saver";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { useRealm } from "../context/realm-context/RealmContext";
 import { prettyPrintJSON } from "../util";
 
@@ -77,7 +77,7 @@ export const PartialExportDialog = ({
       actions={[
         <Button
           key="export"
-          data-testid="export-button"
+          data-testid="confirm"
           isDisabled={isExporting}
           onClick={exportRealm}
         >
@@ -85,7 +85,7 @@ export const PartialExportDialog = ({
         </Button>,
         <Button
           key="cancel"
-          data-testid="cancel-button"
+          data-testid="cancel"
           variant={ButtonVariant.link}
           onClick={onClose}
         >

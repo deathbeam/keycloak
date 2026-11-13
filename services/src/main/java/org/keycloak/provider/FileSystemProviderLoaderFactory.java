@@ -16,14 +16,14 @@
  */
 package org.keycloak.provider;
 
-import org.jboss.logging.Logger;
-
 import java.io.File;
 import java.io.FilenameFilter;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.LinkedList;
 import java.util.List;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -39,7 +39,10 @@ public class FileSystemProviderLoaderFactory implements ProviderLoaderFactory {
 
     @Override
     public ProviderLoader create(KeycloakDeploymentInfo info, ClassLoader baseClassLoader, String resource) {
-        return new DefaultProviderLoader(info, createClassLoader(baseClassLoader, resource.split(";")));
+        // Intentionally retained for server lifetime; ProviderLoader has no close lifecycle.
+        @SuppressWarnings("required.method.not.called")
+        URLClassLoader classLoader = createClassLoader(baseClassLoader, resource.split(";"));
+        return new DefaultProviderLoader(info, classLoader);
     }
 
     private static URLClassLoader createClassLoader(ClassLoader parent, String... files) {
@@ -59,7 +62,7 @@ public class FileSystemProviderLoaderFactory implements ProviderLoaderFactory {
                 }
             }
 
-            logger.debug("Loading providers from " + urls.toString());
+            logger.debugf("Loading providers from %s", urls);
 
             return new URLClassLoader(urls.toArray(new URL[urls.size()]), parent);
         } catch (Exception e) {

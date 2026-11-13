@@ -9,7 +9,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../../components/form/FormAccess";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useRealm } from "../../context/realm-context/RealmContext";
@@ -52,7 +52,7 @@ export default function AddOpenIdConnect() {
         providerId: id,
       });
       addAlert(t("createIdentityProviderSuccess"), AlertVariant.success);
-      navigate(
+      void navigate(
         toIdentityProvider({
           realm,
           providerId: id,
@@ -80,7 +80,7 @@ export default function AddOpenIdConnect() {
             onSubmit={handleSubmit(onSubmit)}
           >
             <OIDCGeneralSettings />
-            <OpenIdConnectSettings />
+            <OpenIdConnectSettings isOIDC />
             <OIDCAuthentication />
             <ActionGroup>
               <Button

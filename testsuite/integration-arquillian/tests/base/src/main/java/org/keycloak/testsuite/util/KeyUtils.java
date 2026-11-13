@@ -1,18 +1,5 @@
 package org.keycloak.testsuite.util;
 
-import jakarta.ws.rs.core.Response;
-import org.keycloak.admin.client.resource.RealmResource;
-import org.keycloak.common.crypto.CryptoIntegration;
-import org.keycloak.common.util.MultivaluedHashMap;
-import org.keycloak.crypto.KeyStatus;
-import org.keycloak.crypto.KeyType;
-import org.keycloak.crypto.KeyUse;
-import org.keycloak.keys.AbstractEcdsaKeyProviderFactory;
-import org.keycloak.keys.KeyProvider;
-import org.keycloak.representations.idm.ComponentRepresentation;
-import org.keycloak.representations.idm.KeysMetadataRepresentation;
-import org.keycloak.testsuite.admin.ApiUtil;
-
 import java.security.InvalidAlgorithmParameterException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
@@ -28,9 +15,29 @@ import java.security.spec.X509EncodedKeySpec;
 import java.util.Base64;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import jakarta.ws.rs.core.Response;
+
+import org.keycloak.admin.client.resource.RealmResource;
+import org.keycloak.common.crypto.CryptoIntegration;
+import org.keycloak.common.util.BouncyIntegration;
+import org.keycloak.common.util.MultivaluedHashMap;
+import org.keycloak.crypto.JavaAlgorithm;
+import org.keycloak.crypto.KeyStatus;
+import org.keycloak.crypto.KeyType;
+import org.keycloak.crypto.KeyUse;
+import org.keycloak.keys.AbstractEcKeyProviderFactory;
+import org.keycloak.keys.GeneratedEcdhKeyProviderFactory;
+import org.keycloak.keys.GeneratedEcdsaKeyProviderFactory;
+import org.keycloak.keys.KeyProvider;
+import org.keycloak.representations.idm.ComponentRepresentation;
+import org.keycloak.representations.idm.KeysMetadataRepresentation;
+import org.keycloak.testsuite.admin.ApiUtil;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author mhajas
@@ -40,8 +47,13 @@ public class KeyUtils {
 
         try {
             KeyPairGenerator kpg = CryptoIntegration.getProvider().getKeyPairGen("ECDSA");
-            String domainParamNistRep = AbstractEcdsaKeyProviderFactory.convertAlgorithmToECDomainParmNistRep(algorithm);
-            String curve = AbstractEcdsaKeyProviderFactory.convertECDomainParmNistRepToSecRep(domainParamNistRep);
+            String domainParamNistRep = GeneratedEcdsaKeyProviderFactory
+                    .convertJWSAlgorithmToECDomainParmNistRep(algorithm);
+            if (domainParamNistRep == null) {
+                domainParamNistRep = GeneratedEcdhKeyProviderFactory
+                        .convertJWEAlgorithmToECDomainParmNistRep(algorithm);
+            }
+            String curve = AbstractEcKeyProviderFactory.convertECDomainParmNistRepToSecRep(domainParamNistRep);
             ECGenParameterSpec parameterSpec = new ECGenParameterSpec(curve);
             kpg.initialize(parameterSpec);
             return kpg.generateKeyPair();
@@ -50,6 +62,16 @@ public class KeyUtils {
         }
     }
 
+    public static KeyPair generateEdDSAKey(String curve) throws NoSuchAlgorithmException, NoSuchProviderException {
+        KeyPairGenerator kpg = CryptoIntegration.getProvider().getKeyPairGen(curve);
+        return kpg.generateKeyPair();
+    }
+
+    public static SecretKey generateSecretKey(String algorithm, int keySize) throws NoSuchAlgorithmException, NoSuchProviderException {
+        KeyGenerator keyGen = KeyGenerator.getInstance(JavaAlgorithm.getJavaAlgorithm(algorithm), BouncyIntegration.PROVIDER);
+        keyGen.init(keySize);
+        return keyGen.generateKey();
+    }
 
     public static PublicKey publicKeyFromString(String key) {
         try {

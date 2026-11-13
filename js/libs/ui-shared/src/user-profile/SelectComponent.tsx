@@ -1,4 +1,4 @@
-import { SelectOption } from "@patternfly/react-core";
+import { Chip, ChipGroup, SelectOption } from "@patternfly/react-core";
 import { useState } from "react";
 import { Controller, ControllerRenderProps } from "react-hook-form";
 import { KeycloakSelect, SelectVariant } from "../select/KeycloakSelect";
@@ -21,7 +21,7 @@ export const SelectComponent = (props: UserProfileFieldProps) => {
     field: ControllerRenderProps<UserFormFields>,
   ) => {
     if (isMultiValue) {
-      if (field.value.includes(value)) {
+      if (field.value?.includes(value)) {
         field.onChange(field.value.filter((item: string) => item !== value));
       } else {
         if (Array.isArray(field.value)) {
@@ -40,18 +40,25 @@ export const SelectComponent = (props: UserProfileFieldProps) => {
 
   const optionLabel =
     (attribute.annotations?.["inputOptionLabels"] as OptionLabel) || {};
+  const prefix = attribute.annotations?.[
+    "inputOptionLabelsI18nPrefix"
+  ] as string;
 
   const fetchLabel = (option: string) =>
-    label(props.t, optionLabel[option], option);
+    label(props.t, optionLabel[option], option, prefix);
 
-  const convertOptions = (selected: string) =>
+  const convertOptions = (selected: string | string[]) =>
     options
       .filter((o) =>
         fetchLabel(o)!.toLowerCase().includes(filter.toLowerCase()),
       )
       .map((option) => (
         <SelectOption
-          selected={selected === option}
+          selected={
+            Array.isArray(selected)
+              ? selected.includes(option)
+              : selected === option
+          }
           key={option}
           value={option}
         >
@@ -63,13 +70,13 @@ export const SelectComponent = (props: UserProfileFieldProps) => {
     <UserProfileGroup {...props}>
       <Controller
         name={fieldName(attribute.name)}
-        defaultValue=""
+        defaultValue={attribute.defaultValue}
         control={form.control}
         render={({ field }) => (
           <KeycloakSelect
             toggleId={attribute.name}
             onToggle={(b) => setOpen(b)}
-            onClear={() => setValue("", field)}
+            onClear={() => field.onChange(isMultiValue ? [] : "")}
             onSelect={(value) => {
               const option = value.toString();
               setValue(option, field);
@@ -81,6 +88,26 @@ export const SelectComponent = (props: UserProfileFieldProps) => {
               isMultiValue && Array.isArray(field.value)
                 ? field.value
                 : fetchLabel(field.value)
+            }
+            // Chips must remove by option key, but display inputOptionLabels.
+            // Passing labels as selections made chip clicks toggle/add the label
+            // string instead of removing the selected option key.
+            chipGroupComponent={
+              isMultiValue && Array.isArray(field.value) ? (
+                <ChipGroup>
+                  {field.value.map((option: string) => (
+                    <Chip
+                      key={option}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setValue(option, field);
+                      }}
+                    >
+                      {fetchLabel(option)}
+                    </Chip>
+                  ))}
+                </ChipGroup>
+              ) : undefined
             }
             variant={
               isMultiValue

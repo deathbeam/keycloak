@@ -28,12 +28,13 @@
 
     <artifactId>keycloak-core</artifactId>
     <name>Keycloak Core</name>
+    <description>Keycloak Core</description>
     <packaging>jar</packaging>
-    <description/>
 
     <properties>
-        <!-- We still need to support EAP 8, set the Java version to 11. -->
-        <maven.compiler.release>11</maven.compiler.release>
+        <maven.compiler.source>8</maven.compiler.source>
+        <maven.compiler.target>8</maven.compiler.target>
+        <maven.compiler.release>8</maven.compiler.release>
         <timestamp>${maven.build.timestamp}</timestamp>
         <maven.build.timestamp.format>yyyy-MM-dd HH:mm</maven.build.timestamp.format>
     </properties>
@@ -55,6 +56,14 @@
             <artifactId>jackson-datatype-jdk8</artifactId>
         </dependency>
         <dependency>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.webauthn4j</groupId>
+            <artifactId>webauthn4j-core</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.jboss.logging</groupId>
             <artifactId>jboss-logging</artifactId>
             <scope>provided</scope>
@@ -72,9 +81,9 @@
 
     <profiles>
         <profile>
-            <id>jdk-16</id>
+            <id>jdk-15</id>
             <activation>
-                <jdk>[16,)</jdk>
+                <jdk>[15,)</jdk>
             </activation>
             <build>
                 <plugins>
@@ -82,17 +91,17 @@
                         <artifactId>maven-compiler-plugin</artifactId>
                         <executions>
                             <execution>
-                                <id>compile-java16</id>
+                                <id>compile-java15</id>
                                 <phase>compile</phase>
                                 <goals>
                                     <goal>compile</goal>
                                 </goals>
                                 <configuration>
-                                    <release>16</release>
-                                    <compileSourceRoots>
-                                        <compileSourceRoot>${project.basedir}/src/main/java16</compileSourceRoot>
-                                    </compileSourceRoots>
-                                    <multiReleaseOutput>true</multiReleaseOutput>
+                                    <includes>
+                                        <include>org/keycloak/jose/jwk/EdECUtilsImpl.java</include>
+                                    </includes>
+                                    <excludes combine.self="override" />
+                                    <release>15</release>
                                 </configuration>
                             </execution>
                         </executions>
@@ -112,13 +121,6 @@
         <plugins>
             <plugin>
                 <artifactId>maven-jar-plugin</artifactId>
-                <configuration>
-                    <archive>
-                        <manifestEntries>
-                            <Multi-Release>true</Multi-Release>
-                        </manifestEntries>
-                    </archive>
-                </configuration>
                 <executions>
                     <execution>
                         <goals>
@@ -126,6 +128,15 @@
                         </goals>
                     </execution>
                 </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <excludes>
+                        <exclude>org/keycloak/jose/jwk/EdECUtilsImpl.java</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
         </plugins>
     </build>

@@ -1,19 +1,17 @@
 import type ClientRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientRepresentation";
 import type { RoleMappingPayload } from "@keycloak/keycloak-admin-client/lib/defs/roleRepresentation";
-import type UserRepresentation from "@keycloak/keycloak-admin-client/lib/defs/userRepresentation";
+import { useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import { AlertVariant, PageSection } from "@patternfly/react-core";
 import { InfoCircleIcon } from "@patternfly/react-icons";
 import { useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
-import { KeycloakSpinner } from "../../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { RoleMapping, Row } from "../../components/role-mapping/RoleMapping";
 import { useAccess } from "../../context/access/Access";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { toUser } from "../../user/routes/User";
-import { useFetch } from "../../utils/useFetch";
 
 import "./service-account.css";
 
@@ -28,19 +26,23 @@ export const ServiceAccount = ({ client }: ServiceAccountProps) => {
   const { addAlert, addError } = useAlerts();
   const { realm } = useRealm();
 
-  const [serviceAccount, setServiceAccount] = useState<UserRepresentation>();
+  const [serviceAccountUserId, setServiceAccountUserId] = useState<string>();
 
   const { hasAccess } = useAccess();
   const hasManageClients = hasAccess("manage-clients");
 
   useFetch(
-    () =>
-      adminClient.clients.getServiceAccountUser({
+    async () => {
+      const freshClient = await adminClient.clients.findOne({
         id: client.id!,
-      }),
-    (serviceAccount) => setServiceAccount(serviceAccount),
+      });
+      return freshClient?.serviceAccountUserId;
+    },
+    (id) => setServiceAccountUserId(id),
     [],
   );
+
+  const serviceAccountUsername = `service-account-${client.clientId}`;
 
   const assignRoles = async (rows: Row[]) => {
     try {
@@ -49,7 +51,7 @@ export const ServiceAccount = ({ client }: ServiceAccountProps) => {
         .map((row) => row.role as RoleMappingPayload)
         .flat();
       await adminClient.users.addRealmRoleMappings({
-        id: serviceAccount?.id!,
+        id: serviceAccountUserId!,
         roles: realmRoles,
       });
       await Promise.all(
@@ -57,7 +59,7 @@ export const ServiceAccount = ({ client }: ServiceAccountProps) => {
           .filter((row) => row.client !== undefined)
           .map((row) =>
             adminClient.users.addClientRoleMappings({
-              id: serviceAccount?.id!,
+              id: serviceAccountUserId!,
               clientUniqueId: row.client!.id!,
               roles: [row.role as RoleMappingPayload],
             }),
@@ -68,7 +70,7 @@ export const ServiceAccount = ({ client }: ServiceAccountProps) => {
       addError("roleMappingUpdatedError", error);
     }
   };
-  return serviceAccount ? (
+  return serviceAccountUserId ? (
     <>
       <PageSection className="pf-v5-u-pb-0">
         <InfoCircleIcon className="pf-v5-c-alert__icon keycloak--service-account--info-text" />
@@ -76,16 +78,16 @@ export const ServiceAccount = ({ client }: ServiceAccountProps) => {
           <Trans i18nKey="manageServiceAccountUser">
             {""}
             <Link
-              to={toUser({ realm, id: serviceAccount.id!, tab: "settings" })}
+              to={toUser({ realm, id: serviceAccountUserId, tab: "settings" })}
             >
-              {{ link: serviceAccount.username }}
+              {{ link: serviceAccountUsername }}
             </Link>
           </Trans>
         </span>
       </PageSection>
       <RoleMapping
         name={client.clientId!}
-        id={serviceAccount.id!}
+        id={serviceAccountUserId}
         type="users"
         isManager={hasManageClients || client.access?.configure}
         save={assignRoles}

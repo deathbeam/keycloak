@@ -1,5 +1,11 @@
 import type RealmRepresentation from "@keycloak/keycloak-admin-client/lib/defs/realmRepresentation";
-import { KeycloakSelect, SelectVariant } from "@keycloak/keycloak-ui-shared";
+import {
+  KeycloakSelect,
+  ListEmptyState,
+  PaginatingTableToolbar,
+  SelectVariant,
+  useAlerts,
+} from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   Button,
@@ -42,14 +48,11 @@ import { ChangeEvent, useEffect, useState, type FormEvent } from "react";
 import { useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
 import { KeyValueType } from "../../components/key-value-form/key-value-convert";
-import { ListEmptyState } from "../../components/list-empty-state/ListEmptyState";
-import { PaginatingTableToolbar } from "../../components/table-toolbar/PaginatingTableToolbar";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { useWhoAmI } from "../../context/whoami/WhoAmI";
-import { DEFAULT_LOCALE, i18n } from "../../i18n/i18n";
+import { DEFAULT_LOCALE } from "../../i18n/constants";
 import { localeToDisplayName } from "../../util";
 import { AddTranslationModal } from "../AddTranslationModal";
 
@@ -83,7 +86,7 @@ export const RealmOverrides = ({
 }: RealmOverridesProps) => {
   const { adminClient } = useAdminClient();
 
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [addTranslationModalOpen, setAddTranslationModalOpen] = useState(false);
   const [filterDropdownOpen, setFilterDropdownOpen] = useState(false);
   const [translations, setTranslations] = useState<[string, string][]>([]);
@@ -116,10 +119,10 @@ export const RealmOverrides = ({
           max,
           realm: realm.realm!,
           selectedLocale:
-            selectMenuLocale ||
-            getValues("defaultLocale") ||
-            whoAmI.getLocale(),
+            selectMenuLocale || getValues("defaultLocale") || whoAmI.locale,
         });
+
+        setTranslations(Object.entries(result));
 
         if (filter) {
           const searchInTranslations = (idx: number) => {
@@ -137,14 +140,12 @@ export const RealmOverrides = ({
         }
 
         return Object.entries(result).slice(first, first + max);
-      } catch (error) {
+      } catch {
         return [];
       }
     };
 
-    fetchLocalizationTexts().then((translations) => {
-      setTranslations(translations);
-
+    void fetchLocalizationTexts().then((translations) => {
       const updatedRows: IRow[] = translations.map(
         (translation): IRow => ({
           rowEditBtnAriaLabel: () =>
@@ -187,14 +188,14 @@ export const RealmOverrides = ({
   const options = [
     <SelectGroup label={t("defaultLocale")} key="group1">
       <SelectOption key={DEFAULT_LOCALE} value={DEFAULT_LOCALE}>
-        {localeToDisplayName(DEFAULT_LOCALE, whoAmI.getDisplayName())}
+        {localeToDisplayName(DEFAULT_LOCALE, whoAmI.displayName)}
       </SelectOption>
     </SelectGroup>,
     <Divider key="divider" />,
     <SelectGroup label={t("supportedLocales")} key="group2">
       {watchSupportedLocales.map((locale) => (
         <SelectOption key={locale} value={locale}>
-          {localeToDisplayName(locale, whoAmI.getLocale())}
+          {localeToDisplayName(locale, whoAmI.locale)}
         </SelectOption>
       ))}
     </SelectGroup>,
@@ -218,11 +219,11 @@ export const RealmOverrides = ({
       refreshTable();
       translationForm.setValue("key", "");
       translationForm.setValue("value", "");
-      i18n.reloadResources();
+      await i18n.reloadResources();
 
       addAlert(t("addTranslationSuccess"), AlertVariant.success);
     } catch (error) {
-      addError(t("addTranslationError"), error);
+      addError("addTranslationError", error);
     }
   };
 
@@ -241,16 +242,16 @@ export const RealmOverrides = ({
       try {
         for (const key of selectedRowKeys) {
           delete (
-            i18n.store.data[whoAmI.getLocale()][currentRealm] as Record<
+            i18n.store.data[whoAmI.locale][currentRealm] as Record<
               string,
               string
             >
-          )[key],
-            await adminClient.realms.deleteRealmLocalizationTexts({
-              realm: currentRealm!,
-              selectedLocale: selectMenuLocale,
-              key: key,
-            });
+          )[key];
+          await adminClient.realms.deleteRealmLocalizationTexts({
+            realm: currentRealm!,
+            selectedLocale: selectMenuLocale,
+            key: key,
+          });
         }
         setAreAllRowsSelected(false);
         setSelectedRowKeys([]);
@@ -318,12 +319,11 @@ export const RealmOverrides = ({
         },
         value,
       );
-      i18n.reloadResources();
 
       addAlert(t("updateTranslationSuccess"), AlertVariant.success);
       setTableRows(newRows);
     } catch (error) {
-      addAlert(t("updateTranslationError"), AlertVariant.danger);
+      addError("updateTranslationError", error);
     }
 
     setEditStates((prevEditStates) => ({
@@ -338,8 +338,8 @@ export const RealmOverrides = ({
       {addTranslationModalOpen && (
         <AddTranslationModal
           handleModalToggle={handleModalToggle}
-          save={(pair: any) => {
-            addKeyValue(pair);
+          save={async (pair: any) => {
+            await addKeyValue(pair);
             handleModalToggle();
           }}
           form={translationForm}
@@ -384,6 +384,7 @@ export const RealmOverrides = ({
             </Button>
             <ToolbarItem>
               <Dropdown
+                onOpenChange={(isOpen) => setKebabOpen(isOpen)}
                 toggle={(ref) => (
                   <MenuToggle
                     ref={ref}
@@ -436,9 +437,9 @@ export const RealmOverrides = ({
               }}
               selections={
                 selectMenuValueSelected
-                  ? localeToDisplayName(selectMenuLocale, whoAmI.getLocale())
+                  ? localeToDisplayName(selectMenuLocale, whoAmI.locale)
                   : realm.defaultLocale !== ""
-                    ? localeToDisplayName(DEFAULT_LOCALE, whoAmI.getLocale())
+                    ? localeToDisplayName(DEFAULT_LOCALE, whoAmI.locale)
                     : t("placeholderText")
               }
             >
@@ -513,8 +514,8 @@ export const RealmOverrides = ({
                     <Form
                       isHorizontal
                       className="kc-form-translationValue"
-                      onSubmit={handleSubmit(() => {
-                        onSubmit(formValue, rowIndex);
+                      onSubmit={handleSubmit(async () => {
+                        await onSubmit(formValue, rowIndex);
                       })}
                     >
                       <FormGroup
@@ -597,8 +598,11 @@ export const RealmOverrides = ({
                             setSelectedRowKeys([
                               (row.cells?.[0] as IRowCell).props.value,
                             ]);
-                            translations.length === 1 &&
+
+                            if (translations.length === 1) {
                               setAreAllRowsSelected(true);
+                            }
+
                             toggleDeleteDialog();
                             setKebabOpen(false);
                           },

@@ -19,8 +19,17 @@
 
 package org.keycloak.testsuite.util;
 
-import org.junit.Assume;
-import org.junit.rules.TemporaryFolder;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.security.KeyPair;
+import java.security.KeyStore;
+import java.security.PrivateKey;
+import java.security.cert.Certificate;
+import java.security.cert.X509Certificate;
+import java.util.Arrays;
+import java.util.stream.Stream;
+import javax.crypto.SecretKey;
+
 import org.keycloak.common.crypto.CryptoIntegration;
 import org.keycloak.common.util.CertificateUtils;
 import org.keycloak.common.util.KeyUtils;
@@ -28,16 +37,10 @@ import org.keycloak.common.util.KeystoreUtil;
 import org.keycloak.common.util.PemUtils;
 import org.keycloak.representations.idm.CertificateRepresentation;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.security.KeyPair;
-import java.security.KeyStore;
-import java.security.cert.Certificate;
-import java.security.cert.X509Certificate;
-import java.util.Arrays;
-import java.util.stream.Stream;
+import org.junit.Assume;
+import org.junit.rules.TemporaryFolder;
 
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -64,24 +67,44 @@ public class KeystoreUtils {
     }
 
     public static KeystoreInfo generateKeystore(TemporaryFolder folder, KeystoreUtil.KeystoreFormat keystoreType, String subject, String keystorePassword, String keyPassword, KeyPair keyPair) throws Exception {
-        String fileName = "keystore." + keystoreType.getPrimaryExtension();
-
         X509Certificate certificate = CertificateUtils.generateV1SelfSignedCertificate(keyPair, subject);
+        return generateKeystore(folder, keystoreType, subject, keystorePassword, keyPassword, keyPair.getPrivate(), certificate);
+    }
+
+    public static KeystoreInfo generateKeystore(TemporaryFolder folder, KeystoreUtil.KeystoreFormat keystoreType,
+            String subject, String keystorePassword, String keyPassword, PrivateKey privKey, Certificate certificate) throws Exception {
+        String fileName = "keystore." + keystoreType.getPrimaryExtension();
 
         KeyStore keyStore = CryptoIntegration.getProvider().getKeyStore(keystoreType);
         keyStore.load(null, null);
-
         Certificate[] chain = {certificate};
-        keyStore.setKeyEntry(subject, keyPair.getPrivate(), keyPassword.trim().toCharArray(), chain);
+        keyStore.setKeyEntry(subject, privKey, keyPassword.trim().toCharArray(), chain);
 
         File file = folder.newFile(fileName);
         keyStore.store(new FileOutputStream(file), keystorePassword.trim().toCharArray());
 
         CertificateRepresentation certRep = new CertificateRepresentation();
-        certRep.setPrivateKey(PemUtils.encodeKey(keyPair.getPrivate()));
-        certRep.setPublicKey(PemUtils.encodeKey(keyPair.getPublic()));
+        certRep.setPrivateKey(PemUtils.encodeKey(privKey));
+        certRep.setPublicKey(PemUtils.encodeKey(certificate.getPublicKey()));
         certRep.setCertificate(PemUtils.encodeCertificate(certificate));
         return new KeystoreInfo(certRep, file);
+    }
+
+    public static KeystoreInfo generateKeystore(TemporaryFolder folder, KeystoreUtil.KeystoreFormat keystoreType, String alias,
+            String keystorePassword, String keyPassword, SecretKey secretKey) throws Exception {
+        String fileName = "keystore." + keystoreType.getPrimaryExtension();
+
+        KeyStore keyStore = KeyStore.getInstance(keystoreType.name());
+        keyStore.load(null, null);
+
+        KeyStore.SecretKeyEntry secretKeyEntry = new KeyStore.SecretKeyEntry(secretKey);
+        KeyStore.ProtectionParameter protection = new KeyStore.PasswordProtection(keyPassword.trim().toCharArray());
+        keyStore.setEntry(alias, secretKeyEntry, protection);
+
+        File file = folder.newFile(fileName);
+        keyStore.store(new FileOutputStream(file), keystorePassword.trim().toCharArray());
+
+        return new KeystoreInfo(null, file);
     }
 
     public static KeystoreInfo generateKeystore(TemporaryFolder folder, KeystoreUtil.KeystoreFormat keystoreType, String subject, String keystorePassword, String keyPassword) throws Exception {

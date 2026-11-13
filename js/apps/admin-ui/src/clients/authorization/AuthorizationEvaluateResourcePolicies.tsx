@@ -64,14 +64,15 @@ export const AuthorizationEvaluateResourcePolicies = ({
         </Td>
         <Td>{t(`${outerPolicy.policy?.decisionStrategy?.toLowerCase()}`)}</Td>
         <Td>
-          {outerPolicy.status === DecisionEffect.Permit
-            ? resource.policies?.[rowIndex]?.scopes?.join(", ")
+          {outerPolicy.status === DecisionEffect.Permit &&
+          outerPolicy.policy?.scopes?.length
+            ? outerPolicy.policy.scopes.join(", ")
             : "-"}
         </Td>
         <Td>
           {outerPolicy.status === DecisionEffect.Deny &&
-          resource.policies?.[rowIndex]?.scopes?.length
-            ? resource.policies[rowIndex].scopes?.join(", ")
+          outerPolicy.scopes?.length
+            ? outerPolicy.scopes.join(", ")
             : "-"}
         </Td>
       </Tr>
@@ -97,8 +98,7 @@ export const AuthorizationEvaluateResourcePolicies = ({
                           })}
                         >
                           {item.policy?.name}
-                        </Link>
-
+                        </Link>{" "}
                         {t("votedToStatus", {
                           status: capitalize(item.status as string),
                         })}

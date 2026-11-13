@@ -17,7 +17,13 @@
 
 package org.keycloak.federation.kerberos;
 
-import org.jboss.logging.Logger;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+import javax.security.auth.login.LoginException;
+
 import org.keycloak.common.Profile;
 import org.keycloak.common.constants.KerberosConstants;
 import org.keycloak.credential.CredentialAuthentication;
@@ -31,10 +37,12 @@ import org.keycloak.models.CredentialValidationOutput;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.RequiredActionProviderModel;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserCredentialModel;
-import org.keycloak.models.UserModel;
 import org.keycloak.models.UserManager;
+import org.keycloak.models.UserModel;
+import org.keycloak.models.UserModel.RequiredAction;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.storage.ReadOnlyException;
 import org.keycloak.storage.UserStoragePrivateUtil;
@@ -42,19 +50,14 @@ import org.keycloak.storage.UserStorageProvider;
 import org.keycloak.storage.UserStorageProviderModel;
 import org.keycloak.storage.user.ImportedUserValidation;
 import org.keycloak.storage.user.UserLookupProvider;
+import org.keycloak.storage.user.UserRegistrationProvider;
 import org.keycloak.userprofile.AttributeGroupMetadata;
 import org.keycloak.userprofile.AttributeMetadata;
 import org.keycloak.userprofile.UserProfileDecorator;
 import org.keycloak.userprofile.UserProfileMetadata;
 import org.keycloak.userprofile.UserProfileUtil;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.stream.Stream;
-
-import javax.security.auth.login.LoginException;
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -65,7 +68,8 @@ public class KerberosFederationProvider implements UserStorageProvider,
         CredentialInputUpdater,
         CredentialAuthentication,
         ImportedUserValidation,
-        UserProfileDecorator {
+        UserProfileDecorator,
+        UserRegistrationProvider {
 
     private static final Logger logger = Logger.getLogger(KerberosFederationProvider.class);
     public static final String KERBEROS_PRINCIPAL = KerberosConstants.KERBEROS_PRINCIPAL;
@@ -211,6 +215,11 @@ public class KerberosFederationProvider implements UserStorageProvider,
 
                     return CredentialValidationOutput.fallback();
                 } else {
+                    String responseToken = spnegoAuthenticator.getResponseToken();
+                    if (responseToken != null) {
+                        state.put(KerberosConstants.RESPONSE_TOKEN, responseToken);
+                    }
+
                     String delegationCredential = spnegoAuthenticator.getSerializedDelegationCredential();
                     if (delegationCredential != null) {
                         state.put(KerberosConstants.GSS_DELEGATION_CREDENTIAL, delegationCredential);
@@ -287,13 +296,23 @@ public class KerberosFederationProvider implements UserStorageProvider,
         user.setSingleAttribute(KERBEROS_PRINCIPAL, kerberosPrincipal.toString());
 
         if (kerberosConfig.isUpdateProfileFirstLogin()) {
-            if (Profile.isFeatureEnabled(Profile.Feature.UPDATE_EMAIL)) {
+            if (isUpdateEmailEnabled(realm)) {
                 user.addRequiredAction(UserModel.RequiredAction.UPDATE_EMAIL);
             }
             user.addRequiredAction(UserModel.RequiredAction.UPDATE_PROFILE);
         }
 
         return validate(realm, user);
+    }
+
+    private static boolean isUpdateEmailEnabled(RealmModel realm) {
+        if (!Profile.isFeatureEnabled(Profile.Feature.UPDATE_EMAIL)) {
+            return false;
+        }
+
+        RequiredActionProviderModel model = realm.getRequiredActionProviderByAlias(RequiredAction.UPDATE_EMAIL.name());
+
+        return model != null && model.isEnabled();
     }
 
     @Override
@@ -310,5 +329,16 @@ public class KerberosFederationProvider implements UserStorageProvider,
 
         AttributeGroupMetadata metadataGroup = UserProfileUtil.lookupUserMetadataGroup(session);
         return Collections.singletonList(UserProfileUtil.createAttributeMetadata(KerberosConstants.KERBEROS_PRINCIPAL, metadata, metadataGroup, guiOrder++, model.getName()));
+    }
+
+    @Override
+    public boolean removeUser(RealmModel realm, UserModel user) {
+        return true;
+    }
+
+    @Override
+    public UserModel addUser(RealmModel realm, String username) {
+        // no support for creating users
+        return null;
     }
 }

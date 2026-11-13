@@ -12,14 +12,11 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { HelpItem } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
 import { FormAccess } from "../../components/form/FormAccess";
-import { ListEmptyState } from "../../components/list-empty-state/ListEmptyState";
-import {
-  Action,
-  KeycloakDataTable,
-} from "../../components/table-toolbar/KeycloakDataTable";
+import { ListEmptyState } from "@keycloak/keycloak-ui-shared";
+import { Action, KeycloakDataTable } from "@keycloak/keycloak-ui-shared";
 import { TimeSelectorForm } from "../../components/time-selector/TimeSelectorForm";
 import useFormatDate, { FORMAT_DATE_AND_TIME } from "../../utils/useFormatDate";
 import { AddHostDialog } from ".././advanced/AddHostDialog";
@@ -131,7 +128,7 @@ export const ClusteringPanel = ({
             ariaLabelKey="registeredClusterNodes"
             loader={() =>
               Promise.resolve<Node[]>(
-                Object.entries(nodes || {}).map((entry) => {
+                Object.entries(nodes).map((entry) => {
                   return { host: entry[0], registration: entry[1] };
                 }),
               )
@@ -141,6 +138,7 @@ export const ClusteringPanel = ({
                 <ToolbarItem>
                   <Button
                     id="testClusterAvailability"
+                    data-testid="test-cluster-availability"
                     onClick={testCluster}
                     variant={ButtonVariant.secondary}
                     isDisabled={Object.keys(nodes).length === 0}
@@ -151,6 +149,7 @@ export const ClusteringPanel = ({
                 <ToolbarItem>
                   <Button
                     id="registerNodeManually"
+                    data-testid="registerNodeManually"
                     onClick={() => setAddNodeOpen(true)}
                     variant={ButtonVariant.tertiary}
                   >

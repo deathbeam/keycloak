@@ -1,12 +1,5 @@
 package org.keycloak.models.cache.infinispan;
 
-import org.infinispan.Cache;
-import org.jboss.logging.Logger;
-import org.keycloak.cluster.ClusterProvider;
-import org.keycloak.models.cache.infinispan.events.InvalidationEvent;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.cache.infinispan.entities.Revisioned;
-
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -14,6 +7,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Predicate;
+
+import org.keycloak.cluster.ClusterEvent;
+import org.keycloak.cluster.ClusterProvider;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.cache.infinispan.entities.Revisioned;
+import org.keycloak.models.cache.infinispan.events.InvalidationEvent;
+
+import org.infinispan.Cache;
+import org.jboss.logging.Logger;
 
 /**
  *
@@ -40,15 +42,32 @@ import java.util.function.Predicate;
 
  The issue is that Node 1 doesn't have an entry for the user, so it never receives an invalidation listener event from Node 2 thus it can't bump the version.  So, when node 1 goes to cache the user it is stale as the version number was never bumped.
 
- So how is this issue fixed?  here is pseudo code:
+ How is this issue fixed with the current implementation?
 
- 1. Node 1 calls cacheManager.getCurrentRevision() to get the current local version counter of that User
- 2. Node 1 getCurrentRevision() pulls current counter for that user
- 3. Node 1 getCurrentRevision() adds a "invalidation.key.userid" to invalidation cache.  Its just a marker. nothing else
- 4. Node 2 update user
- 5. Node 2 does a cache.remove(user) cache.remove(invalidation.key.userid)
- 6. Node 1 receives invalidation event for invalidation.key.userid. Bumps the version counter for that user
- 7. node 1 version check fails, it doesn't cache the user
+ 1. Node 1 starts a transaction and records the current revision of the user
+    (getCurrentRevision(); if no revision exists yet, it uses the current value of the node's local counter).
+ 2. Node 1 reads the user from the DB.
+ 3. Node 2 updates the user in the DB.
+ 4. Node 2 calls invalidateObject(userId). This removes the entry from the local cache.
+ 5. Node 2 then bumps the user's revision in its local revision cache.
+ 6. Node 2 sends an InvalidationEvent to the cluster.
+ 7. Node 1 receives the InvalidationEvent and calls invalidateObject(userId).
+    This removes the entry from its local cache if one exists.
+    It also bumps the user's revision in its local revision cache, even if there was no entry:
+    the revision is set to the next value of the node's local counter, which is higher than any value that node has used before.
+    Revisions are only compared on the same node, so they don't need to match across nodes.
+ 8. Node 1 tries to cache the user it read in step 2.
+    addRevisioned() skips caching if the user's current revision is newer than the revision of the transaction start,
+    or newer than the revision recorded in step 1.
+    The stale entry is therefore not stored.
+
+ The revision cache is local and bounded, so a user's revision entry can be evicted at any time.
+ In that case addRevisioned() falls back to the node's current counter.
+ That counter is newer than the transaction start if any invalidation happened on this node since then, so caching is skipped.
+ This can skip caching unnecessarily, but it never caches a stale entry.
+
+ No extra marker key is added to the invalidation cache.
+ The revision bump on every node, whether or not it cached the entry, prevents the stale entry from being cached.
  *
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
  * @version $Revision: 1 $
@@ -74,7 +93,7 @@ public abstract class CacheManager {
         return counter.current();
     }
 
-    public Long getCurrentRevision(String id) {
+    public long getCurrentRevision(String id) {
         Long revision = revisions.get(id);
         if (revision == null) {
             revision = counter.current();
@@ -92,7 +111,7 @@ public abstract class CacheManager {
     }
 
     public <T extends Revisioned> T get(String id, Class<T> type) {
-        Revisioned o = (Revisioned)cache.get(id);
+        Revisioned o = cache.get(id);
         if (o == null) {
             return null;
         }
@@ -109,20 +128,20 @@ public abstract class CacheManager {
             cache.remove(id);
             return null;
         }
-        long oRev = o.getRevision() == null ? -1L : o.getRevision().longValue();
+        long oRev = o.getRevision();
         if (rev > oRev) {
             if (getLogger().isTraceEnabled()) {
-                getLogger().tracev("get() rev: {0} o.rev: {1}", rev.longValue(), oRev);
+                getLogger().tracev("get() rev: {0} o.rev: {1}", rev, oRev);
             }
             // the object in this.cache is outdated => remove it
             cache.remove(id);
             return null;
         }
-        return o != null && type.isInstance(o) ? type.cast(o) : null;
+        return type.isInstance(o) ? type.cast(o) : null;
     }
 
     public Object invalidateObject(String id) {
-        Revisioned removed = (Revisioned)cache.remove(id);
+        Revisioned removed = cache.remove(id);
 
         if (getLogger().isTraceEnabled()) {
             getLogger().tracef("Removed key='%s', value='%s' from cache", id, removed);
@@ -169,7 +188,7 @@ public abstract class CacheManager {
                 return;
             }
             if (rev.equals(object.getRevision())) {
-                cache.putForExternalRead(id, object);
+                put(id, object, lifespan);
                 return;
             }
             if (rev > object.getRevision()) { // revision is ahead, don't cache
@@ -178,8 +197,7 @@ public abstract class CacheManager {
             }
             // revisions cache has a lower value than the object.revision, so update revision and add it to cache
             revisions.put(id, object.getRevision());
-            if (lifespan < 0) cache.putForExternalRead(id, object);
-            else cache.putForExternalRead(id, object, lifespan, TimeUnit.MILLISECONDS);
+            put(id, object, lifespan);
         } finally {
             endRevisionBatch();
         }
@@ -198,6 +216,14 @@ public abstract class CacheManager {
         }
     }
 
+    private void put(String id, Revisioned object, long lifespan) {
+        if (lifespan < 0) {
+            cache.putForExternalRead(id, object);
+        } else if (lifespan > 0) {
+            cache.putForExternalRead(id, object, lifespan, TimeUnit.MILLISECONDS);
+        }
+    }
+
     private Iterator<Map.Entry<String, Revisioned>> getEntryIterator(Predicate<Map.Entry<String, Revisioned>> predicate) {
         return cache
                 .entrySet()
@@ -208,7 +234,7 @@ public abstract class CacheManager {
 
     public void sendInvalidationEvents(KeycloakSession session, Collection<InvalidationEvent> invalidationEvents, String eventKey) {
         session.getProvider(ClusterProvider.class)
-                .notify(eventKey, invalidationEvents, true, ClusterProvider.DCNotify.ALL_DCS);
+                .notify(eventKey, invalidationEvents, true);
     }
 
 
@@ -226,4 +252,26 @@ public abstract class CacheManager {
 
     protected abstract void addInvalidationsFromEvent(InvalidationEvent event, Set<String> invalidations);
 
+    public void invalidateCacheKey(String key, Set<String> invalidations) {
+        invalidations.add(key);
+    }
+
+    /**
+     * Handles a cluster-wide cache clear event by clearing all entries from this cache manager.
+     *
+     * @param ignored The cluster event (unused).
+     */
+    public void onClearEvent(ClusterEvent ignored) {
+        clear();
+    }
+
+    /**
+     * Handles a cluster-wide invalidation event by delegating to {@link #invalidationEventReceived(InvalidationEvent)}.
+     *
+     * @param event The cluster event, which must be an {@link InvalidationEvent}.
+     */
+    public void onInvalidateEvent(ClusterEvent event) {
+        assert event instanceof InvalidationEvent;
+        invalidationEventReceived((InvalidationEvent) event);
+    }
 }

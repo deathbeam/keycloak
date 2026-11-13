@@ -1,8 +1,12 @@
 package org.keycloak.crypto.hash;
 
-import org.bouncycastle.crypto.generators.Argon2BytesGenerator;
-import org.jboss.logging.Logger;
-import org.keycloak.common.util.Base64;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Semaphore;
+
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.credential.hash.PasswordHashProvider;
 import org.keycloak.credential.hash.Salt;
@@ -10,12 +14,10 @@ import org.keycloak.models.PasswordPolicy;
 import org.keycloak.models.credential.PasswordCredentialModel;
 import org.keycloak.models.credential.dto.PasswordCredentialData;
 import org.keycloak.models.credential.dto.PasswordSecretData;
+import org.keycloak.tracing.TracingProviderUtil;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.Semaphore;
+import org.bouncycastle.crypto.generators.Argon2BytesGenerator;
+import org.jboss.logging.Logger;
 
 import static org.keycloak.crypto.hash.Argon2PasswordHashProviderFactory.MEMORY_KEY;
 import static org.keycloak.crypto.hash.Argon2PasswordHashProviderFactory.PARALLELISM_KEY;
@@ -32,8 +34,9 @@ public class Argon2PasswordHashProvider implements PasswordHashProvider {
     private final int iterations;
     private final int parallelism;
     private final Semaphore cpuCoreSemaphore;
+    private final BlockChunkManager blockChunkManager;
 
-    public Argon2PasswordHashProvider(String version, String type, int hashLength, int memory, int iterations, int parallelism, Semaphore cpuCoreSemaphore) {
+    public Argon2PasswordHashProvider(String version, String type, int hashLength, int memory, int iterations, int parallelism, Semaphore cpuCoreSemaphore, BlockChunkManager blockChunkManager) {
         this.version = version;
         this.type = type;
         this.hashLength = hashLength;
@@ -41,13 +44,14 @@ public class Argon2PasswordHashProvider implements PasswordHashProvider {
         this.iterations = iterations;
         this.parallelism = parallelism;
         this.cpuCoreSemaphore = cpuCoreSemaphore;
+        this.blockChunkManager = blockChunkManager;
     }
 
     @Override
     public boolean policyCheck(PasswordPolicy policy, PasswordCredentialModel credential) {
         PasswordCredentialData data = credential.getPasswordCredentialData();
 
-        return iterations == data.getHashIterations() &&
+        return expectedIterations(policy != null ? policy.getHashIterations() : -1) == data.getHashIterations() &&
                 checkCredData(TYPE_KEY, type, data) &&
                 checkCredData(VERSION_KEY, version, data) &&
                 checkCredData(Argon2PasswordHashProviderFactory.HASH_LENGTH_KEY, hashLength, data) &&
@@ -56,19 +60,16 @@ public class Argon2PasswordHashProvider implements PasswordHashProvider {
     }
 
     /**
-     * Password hashing iterations from password policy is intentionally ignored for now for two reasons. 1) default
-     * iterations are 210K, which is way too large for Argon2, and 2) it makes little sense to configure iterations only
-     * for Argon2, which should be combined with configuring memory, which is not currently configurable in password
-     * policy.
+     * Password hashing iterations from the password policy are only used if they are 100 or less, otherwise the
+     * provider's iterations are used. Larger values are most likely meant for PBKDF2 (default 210K), which is way too
+     * large for Argon2.
      */
     @Override
     public PasswordCredentialModel encodedCredential(String rawPassword, int iterations) {
-        if (iterations == -1) {
-            iterations = this.iterations;
-        } else if (iterations > 100) {
+        if (iterations > 100) {
             logger.warn("Iterations for Argon should be less than 100, using default");
-            iterations = this.iterations;
         }
+        iterations = expectedIterations(iterations);
 
         byte[] salt = Salt.generateSalt();
         String encoded = encode(rawPassword, salt, version, type, hashLength, parallelism, memory, iterations);
@@ -100,30 +101,52 @@ public class Argon2PasswordHashProvider implements PasswordHashProvider {
         return encoded.equals(secretData.getValue());
     }
 
+    @Override
+    public String credentialHashingStrength(PasswordCredentialModel credential) {
+        MultivaluedHashMap<String, String> parameters = credential.getPasswordCredentialData().getAdditionalParameters();
+        return String.format("Argon2%s-%s[m=%s,t=%d,p=%s]", parameters.getFirst(TYPE_KEY), parameters.getFirst(VERSION_KEY), parameters.getFirst(MEMORY_KEY), credential.getPasswordCredentialData().getHashIterations(), parameters.getFirst(PARALLELISM_KEY));
+    }
+
     private String encode(String rawPassword, byte[] salt, String version, String type, int hashLength, int parallelism, int memory, int iterations) {
-        try {
+        var tracing = TracingProviderUtil.getTracingProvider();
+        return tracing.trace(Argon2PasswordHashProvider.class, "encode", span -> {
             try {
                 cpuCoreSemaphore.acquire();
+                try (BlockChunkManager.LeasedBlockPool pool = blockChunkManager != null ? blockChunkManager.lease() : null) {
+                    org.bouncycastle.crypto.params.Argon2Parameters.Builder builder = new org.bouncycastle.crypto.params.Argon2Parameters.Builder(Argon2Parameters.getTypeValue(type))
+                            .withVersion(Argon2Parameters.getVersionValue(version))
+                            .withSalt(salt)
+                            .withParallelism(parallelism)
+                            .withMemoryAsKB(memory)
+                            .withIterations(iterations);
+                    if (pool != null) {
+                        builder.withBlockPool(pool);
+                    }
+                    org.bouncycastle.crypto.params.Argon2Parameters parameters = builder.build();
+
+                    Argon2BytesGenerator generator = new Argon2BytesGenerator();
+                    generator.init(parameters);
+
+                    byte[] result = new byte[hashLength];
+                    generator.generateBytes(rawPassword.toCharArray(), result);
+                    return Base64.getEncoder().encodeToString(result);
+                } finally {
+                    cpuCoreSemaphore.release();
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException(e);
             }
-            org.bouncycastle.crypto.params.Argon2Parameters parameters = new org.bouncycastle.crypto.params.Argon2Parameters.Builder(Argon2Parameters.getTypeValue(type))
-                    .withVersion(Argon2Parameters.getVersionValue(version))
-                    .withSalt(salt)
-                    .withParallelism(parallelism)
-                    .withMemoryAsKB(memory)
-                    .withIterations(iterations).build();
+        });
+    }
 
-            Argon2BytesGenerator generator = new Argon2BytesGenerator();
-            generator.init(parameters);
-
-            byte[] result = new byte[hashLength];
-            generator.generateBytes(rawPassword.toCharArray(), result);
-            return Base64.encodeBytes(result);
-        } finally {
-            cpuCoreSemaphore.release();
-        }
+    /**
+     * The iterations that {@link #encodedCredential(String, int)} uses for the given password policy iterations.
+     * {@link #policyCheck(PasswordPolicy, PasswordCredentialModel)} must use the same, otherwise a freshly created hash
+     * is considered outdated and re-hashed after every successful login.
+     */
+    private int expectedIterations(int policyIterations) {
+        return policyIterations == -1 || policyIterations > 100 ? this.iterations : policyIterations;
     }
 
     private boolean checkCredData(String key, int expectedValue, PasswordCredentialData data) {

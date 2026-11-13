@@ -1,8 +1,10 @@
 import type ClientRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientRepresentation";
 import type { ProviderRepresentation } from "@keycloak/keycloak-admin-client/lib/defs/serverInfoRepesentation";
+import { isBundleKey, label } from "@keycloak/keycloak-ui-shared";
 import type { IFormatter, IFormatterValueType } from "@patternfly/react-table";
 import { saveAs } from "file-saver";
 import { flatten } from "flat";
+import { TFunction } from "i18next";
 import { cloneDeep } from "lodash-es";
 import { FieldValues, Path, PathValue, UseFormSetValue } from "react-hook-form";
 import {
@@ -156,6 +158,17 @@ export const upperCaseFormatter =
     return (value ? toUpperCase(value) : undefined) as string;
   };
 
+export const capitalizeFirstLetterFormatter =
+  (): IFormatter => (data?: IFormatterValueType) => {
+    const value = data?.toString();
+
+    return (
+      value
+        ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase()
+        : undefined
+    ) as string;
+  };
+
 export const alphaRegexPattern = /[^A-Za-z]/g;
 
 export const emailRegexPattern =
@@ -165,10 +178,19 @@ export const KEY_PROVIDER_TYPE = "org.keycloak.keys.KeyProvider";
 
 export const prettyPrintJSON = (value: any) => JSON.stringify(value, null, 2);
 
+export const resolveDisplayName = (
+  t: TFunction,
+  displayName?: string,
+  fallback = "",
+) => {
+  if (displayName && isBundleKey(displayName)) {
+    return label(t, displayName);
+  }
+  return displayName || fallback;
+};
+
 export const addTrailingSlash = (url: string) =>
   url.endsWith("/") ? url : url + "/";
-
-export const generateId = () => Math.floor(Math.random() * 1000);
 
 export const localeToDisplayName = (locale: string, displayLocale: string) => {
   try {
@@ -177,26 +199,7 @@ export const localeToDisplayName = (locale: string, displayLocale: string) => {
       // Once the existing locales have been moved, this code can be removed.
       locale === "zh-CN" ? "zh-HANS" : locale === "zh-TW" ? "zh-HANT" : locale,
     );
-  } catch (error) {
+  } catch {
     return locale;
   }
 };
-
-const DARK_MODE_CLASS = "pf-v5-theme-dark";
-export const mediaQuery =
-  window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)");
-
-updateDarkMode(mediaQuery?.matches);
-mediaQuery?.addEventListener("change", (event: MediaQueryListEvent) =>
-  updateDarkMode(event.matches),
-);
-
-function updateDarkMode(isEnabled: boolean = false) {
-  const { classList } = document.documentElement;
-
-  if (isEnabled) {
-    classList.add(DARK_MODE_CLASS);
-  } else {
-    classList.remove(DARK_MODE_CLASS);
-  }
-}

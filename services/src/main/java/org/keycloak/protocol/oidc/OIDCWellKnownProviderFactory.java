@@ -22,7 +22,6 @@ import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
 
-import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.common.util.FindFile;
 import org.keycloak.models.KeycloakSession;
@@ -32,6 +31,8 @@ import org.keycloak.provider.ProviderConfigurationBuilder;
 import org.keycloak.util.JsonSerialization;
 import org.keycloak.wellknown.WellKnownProvider;
 import org.keycloak.wellknown.WellKnownProviderFactory;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -61,8 +62,7 @@ public class OIDCWellKnownProviderFactory implements WellKnownProviderFactory {
     }
 
     protected void initConfigOverrideFromFile(String openidConfigurationOverrideFile) {
-        try {
-            InputStream is = FindFile.findFile(openidConfigurationOverrideFile);
+        try (InputStream is = FindFile.findFile(openidConfigurationOverrideFile)) {
             this.openidConfigOverride = JsonSerialization.readValue(is, Map.class);
             logger.infof("Overriding default OIDC well-known endpoint configuration with the options from file '%s'", openidConfigurationOverrideFile);
         } catch (RuntimeException re) {

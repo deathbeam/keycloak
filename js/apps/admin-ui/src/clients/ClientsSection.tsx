@@ -1,6 +1,6 @@
 import type ClientRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientRepresentation";
 import type { ClientQuery } from "@keycloak/keycloak-admin-client/lib/resources/clients";
-import { label } from "@keycloak/keycloak-ui-shared";
+import { useAlerts, useEnvironment } from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   Badge,
@@ -10,36 +10,29 @@ import {
   Tab,
   TabTitleText,
   ToolbarItem,
+  Tooltip,
 } from "@patternfly/react-core";
-import {
-  IFormatter,
-  IFormatterValueType,
-  IRowData,
-  TableText,
-  cellWidth,
-} from "@patternfly/react-table";
-import { TFunction } from "i18next";
+import { WarningTriangleIcon } from "@patternfly/react-icons";
+import { IRowData, TableText, cellWidth } from "@patternfly/react-table";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { FormattedLink } from "../components/external-link/FormattedLink";
 import {
   RoutableTabs,
   useRoutableTab,
 } from "../components/routable-tabs/RoutableTabs";
-import {
-  Action,
-  KeycloakDataTable,
-} from "../components/table-toolbar/KeycloakDataTable";
+import { Action, KeycloakDataTable } from "@keycloak/keycloak-ui-shared";
 import { ViewHeader } from "../components/view-header/ViewHeader";
 import { useAccess } from "../context/access/Access";
 import { useRealm } from "../context/realm-context/RealmContext";
+import { Environment } from "../environment-types";
 import helpUrls from "../help-urls";
-import { emptyFormatter, exportClient } from "../util";
+import { exportClient } from "../util";
 import { convertClientToUrl } from "../utils/client-url";
+import { translationFormatter } from "../utils/translationFormatter";
 import { InitialAccessTokenList } from "./initial-access/InitialAccessTokenList";
 import { ClientRegistration } from "./registration/ClientRegistration";
 import { toAddClient } from "./routes/AddClient";
@@ -47,12 +40,6 @@ import { toClient } from "./routes/Client";
 import { ClientsTab, toClients } from "./routes/Clients";
 import { toImportClient } from "./routes/ImportClient";
 import { getProtocolName, isRealmClient } from "./utils";
-
-export const translationFormatter =
-  (t: TFunction): IFormatter =>
-  (data?: IFormatterValueType) => {
-    return data ? label(t, data as string) || "—" : "—";
-  };
 
 const ClientDetailLink = (client: ClientRepresentation) => {
   const { t } = useTranslation();
@@ -70,6 +57,14 @@ const ClientDetailLink = (client: ClientRepresentation) => {
           </Badge>
         )}
       </Link>
+      {client.attributes?.["is_temporary_admin"] === "true" && (
+        <Tooltip content={t("temporaryService")}>
+          <WarningTriangleIcon
+            className="pf-v5-u-ml-sm"
+            id="temporary-admin-label"
+          />
+        </Tooltip>
+      )}
     </TableText>
   );
 };
@@ -83,21 +78,29 @@ const ClientName = (client: ClientRepresentation) => {
   );
 };
 
-const ClientDescription = (client: ClientRepresentation) => (
-  <TableText wrapModifier="truncate">
-    {emptyFormatter()(client.description) as string}
-  </TableText>
-);
+const ClientDescription = (client: ClientRepresentation) => {
+  const { t } = useTranslation();
+  return (
+    <TableText wrapModifier="truncate">
+      {translationFormatter(t)(client.description) as string}
+    </TableText>
+  );
+};
 
 const ClientHomeLink = (client: ClientRepresentation) => {
-  const { adminClient } = useAdminClient();
-  const href = convertClientToUrl(client, adminClient.baseUrl);
+  const { environment } = useEnvironment<Environment>();
+  const href = convertClientToUrl(client, environment);
 
   if (!href) {
     return "—";
   }
 
-  return <FormattedLink href={href} />;
+  return (
+    <FormattedLink
+      href={href}
+      data-testid={`client-home-url-${client.clientId}`}
+    />
+  );
 };
 
 const ToolbarItems = () => {
@@ -113,6 +116,7 @@ const ToolbarItems = () => {
     <>
       <ToolbarItem>
         <Button
+          data-testid="createClient"
           component={(props) => <Link {...props} to={toAddClient({ realm })} />}
         >
           {t("createClient")}
@@ -156,7 +160,7 @@ export default function ClientsSection() {
       params.clientId = search;
       params.search = true;
     }
-    return await adminClient.clients.find({ ...params });
+    return adminClient.clients.find({ ...params });
   };
 
   const useTab = (tab: ClientsTab) => useRoutableTab(toClients({ realm, tab }));
@@ -194,6 +198,7 @@ export default function ClientsSection() {
       <PageSection variant="light" className="pf-v5-u-p-0">
         <RoutableTabs
           mountOnEnter
+          unmountOnExit
           isBox
           defaultLocation={toClients({
             realm,

@@ -3,7 +3,7 @@ import { AlertVariant, Tab, Tabs, TabTitleText } from "@patternfly/react-core";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { RoleMapping } from "../components/role-mapping/RoleMapping";
 import { useRealm } from "../context/realm-context/RealmContext";
 import { DefaultsGroupsTab } from "./DefaultGroupsTab";
@@ -24,7 +24,7 @@ export const UserRegistration = () => {
 
     try {
       await adminClient.roles.createComposite(
-        { roleId: realm?.defaultRole!.id!, realm: realmName },
+        { roleId: realm.defaultRole!.id!, realm: realmName },
         compositeArray,
       );
       setKey(key + 1);
@@ -47,8 +47,8 @@ export const UserRegistration = () => {
         data-testid="default-roles-tab"
       >
         <RoleMapping
-          name={realm?.defaultRole!.name!}
-          id={realm?.defaultRole!.id!}
+          name={realm.defaultRole!.name!}
+          id={realm.defaultRole!.id!}
           type="roles"
           isManager
           save={(rows) => addComposites(rows.map((r) => r.role))}

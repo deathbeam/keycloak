@@ -17,25 +17,26 @@
 
 package org.keycloak.authorization.policy.evaluation;
 
-import org.keycloak.authorization.Decision;
-import org.keycloak.authorization.model.Policy;
-import org.keycloak.authorization.permission.ResourcePermission;
-import org.keycloak.representations.idm.authorization.DecisionStrategy;
-
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.keycloak.authorization.Decision;
+import org.keycloak.authorization.model.Policy;
+import org.keycloak.authorization.permission.ResourcePermission;
+import org.keycloak.authorization.policy.evaluation.Result.PolicyResult;
+import org.keycloak.representations.idm.authorization.DecisionStrategy;
+
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
  */
-public abstract class AbstractDecisionCollector implements Decision<DefaultEvaluation> {
+public abstract class AbstractDecisionCollector implements Decision<Evaluation> {
 
     protected final Map<ResourcePermission, Result> results = new LinkedHashMap<>();
 
     @Override
-    public void onDecision(DefaultEvaluation evaluation) {
+    public void onDecision(Evaluation evaluation) {
         Policy parentPolicy = evaluation.getParentPolicy();
         ResourcePermission permission = evaluation.getPermission();
 
@@ -122,11 +123,26 @@ public abstract class AbstractDecisionCollector implements Decision<DefaultEvalu
             default:
                 // defaults to UNANIMOUS
                 for (Result.PolicyResult decision : policyResult.getAssociatedPolicies()) {
-                    if (Effect.DENY.equals(decision.getEffect())) {
+                    if (!Effect.PERMIT.equals(decision.getEffect())) {
                         return false;
                     }
                 }
                 return true;
         }
+    }
+
+    @Override
+    public boolean isEvaluated(String scope) {
+        for (Result result : results.values()) {
+            for (PolicyResult policyResult : result.getResults()) {
+                Policy policy = policyResult.getPolicy();
+
+                if (policy.getScopes().stream().anyMatch(s -> s.getName().equals(scope))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 }

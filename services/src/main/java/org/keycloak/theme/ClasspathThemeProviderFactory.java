@@ -17,14 +17,15 @@
 
 package org.keycloak.theme;
 
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
+
 import org.keycloak.Config;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.util.JsonSerialization;
-
-import java.io.InputStream;
-import java.util.HashMap;
-import java.util.Map;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -42,7 +43,11 @@ public class ClasspathThemeProviderFactory implements ThemeProviderFactory {
 
     public ClasspathThemeProviderFactory(String id, ClassLoader classLoader) {
         this.id = id;
-        loadThemes(classLoader, classLoader.getResourceAsStream(KEYCLOAK_THEMES_JSON));
+        try (InputStream is = classLoader.getResourceAsStream(KEYCLOAK_THEMES_JSON)) {
+            loadThemes(classLoader, is);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to load themes", e);
+        }
     }
 
     public static class ThemeRepresentation {

@@ -1,5 +1,10 @@
 import type ComponentRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentRepresentation";
-import { TextControl } from "@keycloak/keycloak-ui-shared";
+import {
+  KeycloakSpinner,
+  TextControl,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
   AlertVariant,
@@ -10,13 +15,11 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
 import { DynamicComponents } from "../../components/dynamic/DynamicComponents";
 import { FormAccess } from "../../components/form/FormAccess";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { useServerInfo } from "../../context/server-info/ServerInfoProvider";
 import { convertFormValuesToObject, convertToFormValues } from "../../util";
-import { useFetch } from "../../utils/useFetch";
 import { useParams } from "../../utils/useParams";
 import type { CustomUserFederationRouteParams } from "../routes/CustomUserFederation";
 import { toUserFederation } from "../routes/UserFederation";
@@ -25,6 +28,7 @@ import { SettingsCache } from "../shared/SettingsCache";
 import { SyncSettings } from "./SyncSettings";
 
 import "./custom-provider-settings.css";
+import { useState } from "react";
 
 export default function CustomProviderSettings() {
   const { adminClient } = useAdminClient();
@@ -44,6 +48,7 @@ export default function CustomProviderSettings() {
 
   const { addAlert, addError } = useAlerts();
   const { realm: realmName, realmRepresentation: realm } = useRealm();
+  const [loading, setLoading] = useState(true);
 
   const provider = (
     useServerInfo().componentTypes?.[
@@ -64,6 +69,7 @@ export default function CustomProviderSettings() {
       } else if (id) {
         throw new Error(t("notFound"));
       }
+      setLoading(false);
     },
     [],
   );
@@ -79,13 +85,13 @@ export default function CustomProviderSettings() {
       ),
       providerId,
       providerType: "org.keycloak.storage.UserStorageProvider",
-      parentId: realm?.id,
+      parentId: realm.id,
     });
 
     try {
       if (!id) {
         await adminClient.components.create(saveComponent);
-        navigate(toUserFederation({ realm: realmName }));
+        void navigate(toUserFederation({ realm: realmName }));
       } else {
         await adminClient.components.update({ id }, saveComponent);
       }
@@ -101,6 +107,8 @@ export default function CustomProviderSettings() {
       );
     }
   };
+
+  if (loading) return <KeycloakSpinner />;
 
   return (
     <FormProvider {...form}>

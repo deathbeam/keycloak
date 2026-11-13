@@ -17,21 +17,38 @@
 
 package org.keycloak.protocol;
 
+import java.lang.reflect.Method;
+import java.util.AbstractMap;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import org.keycloak.broker.oidc.AbstractOAuth2IdentityProvider;
+import org.keycloak.broker.oidc.OIDCIdentityProvider;
+import org.keycloak.broker.provider.UserAuthenticationIdentityProvider;
+import org.keycloak.models.ClientModel;
 import org.keycloak.models.ClientSessionContext;
+import org.keycloak.models.Constants;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.models.ProtocolMapperModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.utils.RepresentationToModel;
+import org.keycloak.protocol.oidc.OIDCAdvancedConfigWrapper;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.OIDCLoginProtocolFactory;
-
-import java.lang.reflect.Method;
-import java.util.AbstractMap;
-import java.util.Comparator;
-import java.util.Map.Entry;
-import java.util.Objects;
-import java.util.function.Predicate;
-import java.util.stream.Stream;
+import org.keycloak.representations.idm.ProtocolMapperRepresentation;
+import org.keycloak.services.util.DPoPUtil;
+import org.keycloak.services.util.MtlsHoKTokenUtil;
 
 /**
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
@@ -86,25 +103,48 @@ public class ProtocolMapperUtils {
     // Script mapper goes last, so it can access the roles in the token
     public static final int PRIORITY_SCRIPT_MAPPER = 50;
 
+    private static final HashMap<String, Method> ACCESSORS = new HashMap<>();
+
+    public static final Set<String> BROKER_CREDENTIAL_NOTES = Set.of(
+            UserAuthenticationIdentityProvider.FEDERATED_ACCESS_TOKEN,
+            AbstractOAuth2IdentityProvider.FEDERATED_REFRESH_TOKEN,
+            AbstractOAuth2IdentityProvider.FEDERATED_TOKEN_EXPIRATION,
+            OIDCIdentityProvider.FEDERATED_ID_TOKEN);
+
+    // This caches known methods to avoid generating unnecessary failed lookups and exception at runtime which are expensive
+    static {
+        for (Method method : UserModel.class.getMethods()) {
+            String propertyName;
+            if (method.getName().startsWith("is") && method.getParameterCount() == 0) {
+                propertyName = method.getName().substring(2);
+            } else if (method.getName().startsWith("get") && method.getParameterCount() == 0) {
+                propertyName = method.getName().substring(3);
+            } else {
+                continue;
+            }
+            ACCESSORS.put(getLowerCasedProperty(propertyName), method);
+        }
+    }
+
     public static String getUserModelValue(UserModel user, String propertyName) {
+        // To support existing configurations, we accept property names starting with both upper and lower case
+        // as earlier versions of Keycloak where applying this behavior.
+        Method m = ACCESSORS.get(getLowerCasedProperty(propertyName));
+        if (m == null) {
+            return null;
+        }
 
-        String methodName = "get" + Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
         try {
-            Method method = UserModel.class.getMethod(methodName);
-            Object val = method.invoke(user);
+            Object val = m.invoke(user);
             if (val != null) return val.toString();
         } catch (Exception ignore) {
-
         }
-        methodName = "is" + Character.toUpperCase(propertyName.charAt(0)) + propertyName.substring(1);
-        try {
-            Method method = UserModel.class.getMethod(methodName);
-            Object val = method.invoke(user);
-            if (val != null) return val.toString();
-        } catch (Exception ignore) {
 
-        }
         return null;
+    }
+
+    private static String getLowerCasedProperty(String propertyName) {
+        return Character.toLowerCase(propertyName.charAt(0)) + propertyName.substring(1);
     }
 
     /**
@@ -130,17 +170,29 @@ public class ProtocolMapperUtils {
 
     public static Stream<Entry<ProtocolMapperModel, ProtocolMapper>> getSortedProtocolMappers(KeycloakSession session, ClientSessionContext ctx, Predicate<Entry<ProtocolMapperModel, ProtocolMapper>> filter) {
         KeycloakSessionFactory sessionFactory = session.getKeycloakSessionFactory();
-        return ctx.getProtocolMappersStream()
-                .<Entry<ProtocolMapperModel, ProtocolMapper>>map(mapperModel -> {
-                    ProtocolMapper mapper = (ProtocolMapper) sessionFactory.getProviderFactory(ProtocolMapper.class, mapperModel.getProtocolMapper());
-                    if (mapper == null) {
-                        return null;
-                    }
-                    return new AbstractMap.SimpleEntry<>(mapperModel, mapper);
-                })
-                .filter(Objects::nonNull)
-                .filter(filter)
-                .sorted(Comparator.comparing(ProtocolMapperUtils::compare));
+
+        Stream<Entry<ProtocolMapperModel, ProtocolMapper>> protocolMapperStream = //
+                ctx.getProtocolMappersStream()
+                        .<Entry<ProtocolMapperModel, ProtocolMapper>>map(mapperModel -> {
+                            ProtocolMapper mapper = (ProtocolMapper) sessionFactory.getProviderFactory(ProtocolMapper.class, mapperModel.getProtocolMapper());
+                            if (mapper == null) {
+                                return null;
+                            }
+                            return new AbstractMap.SimpleEntry<>(mapperModel, mapper);
+                        })
+                        .filter(Objects::nonNull)
+                        .filter(filter);
+
+        ClientModel client = ctx.getClientSession().getClient();
+        if (OIDCLoginProtocol.LOGIN_PROTOCOL.equals(client.getProtocol())) {
+            protocolMapperStream = Stream.concat(protocolMapperStream, DPoPUtil.getTransientProtocolMapper());
+
+            if (OIDCAdvancedConfigWrapper.fromClientModel(client).isUseMtlsHokToken()) {
+                protocolMapperStream = Stream.concat(protocolMapperStream, MtlsHoKTokenUtil.getTransientProtocolMapper());
+            }
+        }
+
+        return protocolMapperStream.sorted(Comparator.comparing(ProtocolMapperUtils::compare));
     }
 
     public static int compare(Entry<ProtocolMapperModel, ProtocolMapper> entry) {
@@ -150,5 +202,64 @@ public class ProtocolMapperUtils {
 
     public static boolean isEnabled(KeycloakSession session, ProtocolMapperModel mapper) {
         return session.getKeycloakSessionFactory().getProviderFactory(ProtocolMapper.class, mapper.getProtocolMapper()) != null;
+    }
+
+    /** Internal credentials and serialized user state must not be exposed by generic session note mappers. */
+    public static boolean isRestrictedUserSessionNote(String noteName) {
+        if (noteName == null) return false;
+        if (Constants.SESSION_NOTE_LIGHTWEIGHT_USER.equals(noteName)) return true;
+        String upper = noteName.toUpperCase(Locale.ROOT);
+        return BROKER_CREDENTIAL_NOTES.stream()
+                .anyMatch(n -> upper.equals(n) || upper.startsWith(n + ":"));
+    }
+
+    /**
+     * Returns the set of protocol-mapper provider IDs that require a permission check when
+     * {@code incomingMappers} are applied to the existing mappers supplied via {@code existingMappers}.
+     *
+     * @param existingMappers stream of the currently persisted protocol mappers
+     * @param incomingMappers the list of mappers carried by the incoming representation
+     * @return the protocol-mapper provider IDs of all mappers that are new, changed, or deleted
+     */
+    public static Set<String> getChangedOrDeletedMapperTypes(Stream<ProtocolMapperModel> existingMappers,
+                                                              List<ProtocolMapperRepresentation> incomingMappers) {
+        Map<String, ProtocolMapperModel> existingByKey = existingMappers
+                .collect(Collectors.toMap(
+                        m -> m.getProtocol() + "%" + m.getName(),
+                        m -> m));
+
+        Set<String> changedTypes = new HashSet<>();
+        Set<String> incomingKeys = new HashSet<>();
+
+        for (ProtocolMapperRepresentation pmr : incomingMappers) {
+            String key = pmr.getProtocol() + "%" + pmr.getName();
+            incomingKeys.add(key);
+            ProtocolMapperModel existing = existingByKey.get(key);
+            if (existing == null) {
+                // New mapper — must be checked.
+                changedTypes.add(pmr.getProtocolMapper());
+            } else {
+                // Existing mapper — only check if something actually changed.
+                // Note: the id is intentionally NOT normalised here. If the incoming representation
+                // carries a null id (e.g. a second mapper added by the client without an id) or a
+                // different id, that mismatch is itself treated as a change and both types are checked.
+                ProtocolMapperModel proposed = RepresentationToModel.toModel(pmr);
+                if (!existing.equals(proposed)) {
+                    changedTypes.add(pmr.getProtocolMapper());
+                    // Include the stored provider type as well in case that type changed. When the type is unchanged this is a no-op because
+                    // changedTypes is a Set.
+                    changedTypes.add(existing.getProtocolMapper());
+                }
+            }
+        }
+
+        // Any existing mapper absent from the incoming list will be deleted — check those too.
+        for (Map.Entry<String, ProtocolMapperModel> entry : existingByKey.entrySet()) {
+            if (!incomingKeys.contains(entry.getKey())) {
+                changedTypes.add(entry.getValue().getProtocolMapper());
+            }
+        }
+
+        return changedTypes;
     }
 }

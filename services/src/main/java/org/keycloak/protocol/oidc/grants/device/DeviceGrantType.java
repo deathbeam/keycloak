@@ -17,15 +17,22 @@
 
 package org.keycloak.protocol.oidc.grants.device;
 
-import static org.keycloak.protocol.oidc.OIDCLoginProtocolService.tokenServiceBaseUrl;
+import java.net.URI;
+import java.util.Collections;
+import java.util.Map;
+import java.util.Set;
+
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.UriBuilder;
+import jakarta.ws.rs.core.UriInfo;
 
 import org.keycloak.OAuth2Constants;
 import org.keycloak.OAuthErrorException;
-import org.keycloak.common.Profile;
+import org.keycloak.authentication.authenticators.util.AuthenticatorUtils;
 import org.keycloak.events.Details;
 import org.keycloak.events.Errors;
-import org.keycloak.events.EventType;
 import org.keycloak.events.EventBuilder;
+import org.keycloak.events.EventType;
 import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.ClientSessionContext;
@@ -38,13 +45,11 @@ import org.keycloak.models.RealmModel;
 import org.keycloak.models.SingleUseObjectProvider;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
-import org.keycloak.provider.EnvironmentDependentProviderFactory;
 import org.keycloak.protocol.LoginProtocol;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
 import org.keycloak.protocol.oidc.OIDCLoginProtocolService;
 import org.keycloak.protocol.oidc.TokenManager;
 import org.keycloak.protocol.oidc.endpoints.AuthorizationEndpoint;
-import org.keycloak.protocol.oidc.grants.OAuth2GrantType;
 import org.keycloak.protocol.oidc.grants.OAuth2GrantTypeBase;
 import org.keycloak.protocol.oidc.grants.device.clientpolicy.context.DeviceTokenRequestContext;
 import org.keycloak.protocol.oidc.grants.device.clientpolicy.context.DeviceTokenResponseContext;
@@ -54,17 +59,12 @@ import org.keycloak.services.CorsErrorResponseException;
 import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.clientpolicy.ClientPolicyException;
 import org.keycloak.services.managers.AuthenticationManager;
-import org.keycloak.services.managers.UserSessionCrossDCManager;
+import org.keycloak.services.managers.BruteForceProtector;
 import org.keycloak.services.resources.RealmsResource;
 import org.keycloak.services.util.DefaultClientSessionContext;
 import org.keycloak.sessions.AuthenticationSessionModel;
 
-import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.UriBuilder;
-import jakarta.ws.rs.core.UriInfo;
-
-import java.net.URI;
-import java.util.Map;
+import static org.keycloak.protocol.oidc.OIDCLoginProtocolService.tokenServiceBaseUrl;
 
 /**
  * OAuth 2.0 Device Authorization Grant
@@ -166,6 +166,17 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
         }
 
         return deviceCodeModel;
+    }
+
+    public static boolean isDeviceCodeDeniedForDeviceVerificationFlow(KeycloakSession session, RealmModel realm, AuthenticationSessionModel authSession) {
+        if (DeviceGrantType.isOAuth2DeviceVerificationFlow(authSession)) {
+            String verifiedUserCode = authSession.getClientNote(DeviceGrantType.OAUTH2_DEVICE_VERIFIED_USER_CODE);
+            OAuth2DeviceCodeModel deviceCodeModel = DeviceEndpoint.getDeviceByUserCode(session, realm, verifiedUserCode);
+            if (deviceCodeModel != null) {
+                return deviceCodeModel.isDenied();
+            }
+        }
+        return false;
     }
 
     public static void removeDeviceByDeviceCode(KeycloakSession session, String deviceCode) {
@@ -276,14 +287,13 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
 
         String userSessionId = deviceCodeModel.getUserSessionId();
         event.detail(Details.CODE_ID, userSessionId);
-        event.session(userSessionId);
 
         // Retrieve UserSession
-        UserSessionModel userSession = new UserSessionCrossDCManager(session).getUserSessionWithClient(realm, userSessionId,
-            client.getId());
+        var userSessionProvider = session.sessions();
+        UserSessionModel userSession = userSessionProvider.getUserSessionIfClientExists(realm, userSessionId, false, client.getId());
 
         if (userSession == null) {
-            userSession = session.sessions().getUserSession(realm, userSessionId);
+            userSession = userSessionProvider.getUserSession(realm, userSessionId);
             if (userSession == null) {
                 throw new CorsErrorResponseException(cors, OAuthErrorException.AUTHORIZATION_PENDING,
                     "The authorization request is verified but can not lookup the user session yet",
@@ -301,12 +311,19 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
                 Response.Status.BAD_REQUEST);
         }
 
+        event.session(userSession);
         event.user(userSession.getUser());
 
         if (!user.isEnabled()) {
             event.error(Errors.USER_DISABLED);
             throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, "User disabled",
                 Response.Status.BAD_REQUEST);
+        }
+
+        String bruteForceError = AuthenticatorUtils.getDisabledByBruteForceEventError(session.getProvider(BruteForceProtector.class), session, realm, user);
+        if (bruteForceError != null) {
+            event.error(bruteForceError);
+            throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, "Invalid user credentials", Response.Status.BAD_REQUEST);
         }
 
         AuthenticatedClientSessionModel clientSession = userSession.getAuthenticatedClientSessionByClient(client.getId());
@@ -327,7 +344,9 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
         try {
             session.clientPolicy().triggerOnEvent(new DeviceTokenRequestContext(deviceCodeModel, formParams));
         } catch (ClientPolicyException cpe) {
-            event.detail(Details.REASON, cpe.getErrorDetail());
+            event.detail(Details.REASON, Details.CLIENT_POLICY_ERROR);
+            event.detail(Details.CLIENT_POLICY_ERROR, cpe.getError());
+            event.detail(Details.CLIENT_POLICY_ERROR_DETAIL, cpe.getErrorDetail());
             event.error(cpe.getError());
             throw new CorsErrorResponseException(cors, OAuthErrorException.INVALID_GRANT, cpe.getErrorDetail(),
                 Response.Status.BAD_REQUEST);
@@ -336,7 +355,7 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
         // Compute client scopes again from scope parameter. Check if user still has them granted
         // (but in device_code-to-token request, it could just theoretically happen that they are not available)
         String scopeParam = deviceCodeModel.getScope();
-        if (!TokenManager.verifyConsentStillAvailable(session, user, client, TokenManager.getRequestedClientScopes(scopeParam, client))) {
+        if (!TokenManager.verifyConsentStillAvailable(session, user, client, clientSession, scopeParam)) {
             String errorMessage = "Client no longer has requested consent from user";
             event.detail(Details.REASON, errorMessage);
             event.error(Errors.NOT_ALLOWED);
@@ -356,6 +375,11 @@ public class DeviceGrantType extends OAuth2GrantTypeBase {
     @Override
     public EventType getEventType() {
         return EventType.OAUTH2_DEVICE_CODE_TO_TOKEN;
+    }
+
+    @Override
+    public Set<String> getTokenParameterNames() {
+        return Collections.emptySet();
     }
 
 }

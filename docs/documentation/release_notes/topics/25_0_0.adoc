@@ -25,7 +25,7 @@ Elytron OIDC or SpringBoot. You can check the quickstarts also for the example o
 
 = Upgrade to PatternFly 5
 
-In {project_name} 24, the Welcome page is updated to use https://www.patternfly.org/[PatternFly 5], the latest version of the design system that underpins the user interface of {project_name}. In this release, the  Admin Console and Account Console are also updated to use PatternFly 5. If you want to extend and customize the Admin Console and Account Console, review https://www.patternfly.org/get-started/upgrade/[the changes in PatternFly 5] and update your customizations accordingly.
+In {project_name} 24, the Welcome page is updated to use https://www.patternfly.org/[PatternFly 5], the latest version of the design system that underpins the user interface of {project_name}. In this release, the  Admin Console and Account Console are also updated to use PatternFly 5. If you want to extend and customize the Admin Console and Account Console, review https://v5-archive.patternfly.org/get-started/upgrade/[the changes in PatternFly 5] and update your customizations accordingly.
 
 = Argon2 password hashing
 
@@ -41,6 +41,9 @@ memory, which is a requirement to be resistant against GPU attacks. The defaults
 per-hashing request.
 To prevent excessive memory and CPU usage, the parallel computation of hashes by Argon2 is by default limited to the number of cores available to the JVM.
 To support the memory intensive nature of Argon2, we have updated the default GC from ParallelGC to G1GC for a better heap utilization.
+
+Note that Argon2 is not compliant with FIPS 140-2. So if you are in the FIPS environment, the default algorithm will be still PBKDF2. Also note that if you are on non-FIPS environment and
+you plan to migrate to the FIPS environment, consider changing the password policy to a FIPS compliant algorithm such as `pbkdf2-sha512` at the outset. Otherwise, users will not be able to log in after they switch to the FIPS environment.
 
 = New Hostname options
 
@@ -69,7 +72,7 @@ bin/kc.sh build --features=persistent-user-sessions ...
 ----
 
 For more details see the https://www.keycloak.org/server/features[Enabling and disabling features] {section}.
-The https://www.keycloak.org/high-availability/concepts-memory-and-cpu-sizing[sizing guide] contains a new paragraph describing the updated resource requirements when this feature is enabled.
+The https://www.keycloak.org/high-availability/single-cluster/concepts-memory-and-cpu-sizing[sizing guide] contains a new paragraph describing the updated resource requirements when this feature is enabled.
 
 For information on how to upgrade, see the link:{upgradingguide_link}[{upgradingguide_name}].
 

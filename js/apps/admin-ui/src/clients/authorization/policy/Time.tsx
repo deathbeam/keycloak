@@ -25,7 +25,7 @@ const DateTime = ({ name }: { name: string }) => {
       return value;
     }
 
-    const parts = value.match(DATE_TIME_FORMAT);
+    const parts = DATE_TIME_FORMAT.exec(value);
     const parsedDate = [
       date.getFullYear(),
       padDateSegment(date.getMonth() + 1),
@@ -42,7 +42,7 @@ const DateTime = ({ name }: { name: string }) => {
     hour?: number | null,
     minute?: number | null,
   ): string => {
-    const parts = value.match(DATE_TIME_FORMAT);
+    const parts = DATE_TIME_FORMAT.exec(value);
     if (minute !== undefined && minute !== null) {
       return `${parts ? parts[1] : ""} ${hour}:${
         minute < 10 ? `0${minute}` : minute
@@ -98,7 +98,7 @@ type NumberControlProps = {
 
 const NumberControl = ({ name, min, max }: NumberControlProps) => {
   const { control } = useFormContext();
-  const setValue = (newValue: number) => Math.min(newValue, max);
+  const setValue = (newValue: number) => Math.max(min, Math.min(newValue, max));
 
   return (
     <Controller
@@ -111,8 +111,8 @@ const NumberControl = ({ name, min, max }: NumberControlProps) => {
           value={field.value}
           min={min}
           max={max}
-          onPlus={() => field.onChange(Number(field.value) + 1)}
-          onMinus={() => field.onChange(Number(field.value) - 1)}
+          onPlus={() => field.onChange(setValue(Number(field.value) + 1))}
+          onMinus={() => field.onChange(setValue(Number(field.value) - 1))}
           onChange={(event) => {
             const newValue = Number(event.currentTarget.value);
             field.onChange(setValue(!isNaN(newValue) ? newValue : 0));

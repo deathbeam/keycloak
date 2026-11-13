@@ -17,19 +17,20 @@
 
 package org.keycloak.forms.login;
 
+import java.net.URI;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+
+import jakarta.ws.rs.core.MultivaluedMap;
+import jakarta.ws.rs.core.Response;
+
 import org.keycloak.authentication.AuthenticationFlowContext;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.utils.FormMessage;
 import org.keycloak.provider.Provider;
 import org.keycloak.rar.AuthorizationDetails;
 import org.keycloak.sessions.AuthenticationSessionModel;
-
-import jakarta.ws.rs.core.MultivaluedMap;
-import jakarta.ws.rs.core.Response;
-import java.net.URI;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Function;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -56,7 +57,7 @@ public interface LoginFormsProvider extends Provider {
 
     Response createForm(String form);
 
-    String getMessage(String message);
+    String getMessage(String message, Object... parameters);
 
     Response createLoginUsernamePassword();
 
@@ -89,6 +90,14 @@ public interface LoginFormsProvider extends Provider {
     Response createLoginExpiredPage();
 
     Response createErrorPage(Response.Status status);
+
+    /**
+     * Creates an error page, using the supplied OAuth error code for JSON responses.
+     * Providers that do not support OAuth error codes retain their existing behavior.
+     */
+    default Response createErrorPage(Response.Status status, String error) {
+        return createErrorPage(status);
+    }
 
     Response createWebAuthnErrorPage();
 

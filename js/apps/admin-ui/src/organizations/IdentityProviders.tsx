@@ -1,72 +1,53 @@
 import IdentityProviderRepresentation from "@keycloak/keycloak-admin-client/lib/defs/identityProviderRepresentation";
 import {
+  KeycloakDataTable,
+  ListEmptyState,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
+import {
   Button,
   ButtonVariant,
   PageSection,
-  Switch,
   ToolbarItem,
 } from "@patternfly/react-core";
-import { BellIcon } from "@patternfly/react-icons";
+import { sortBy } from "lodash-es";
+import { BellIcon, ExternalLinkAltIcon } from "@patternfly/react-icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
-import { ListEmptyState } from "../components/list-empty-state/ListEmptyState";
-import { KeycloakDataTable } from "../components/table-toolbar/KeycloakDataTable";
-import { useFetch } from "../utils/useFetch";
+import { toIdentityProvider } from "../identity-providers/routes/IdentityProvider";
+import { useRealm } from "../context/realm-context/RealmContext";
+import { toUpperCase } from "../util";
 import useToggle from "../utils/useToggle";
 import { LinkIdentityProviderModal } from "./LinkIdentityProviderModal";
 import { EditOrganizationParams } from "./routes/EditOrganization";
 
-type ShownOnLoginPageCheckProps = {
-  row: IdentityProviderRepresentation;
-  refresh: () => void;
-};
-
-const ShownOnLoginPageCheck = ({
+const OrgLinkProperty = ({
   row,
-  refresh,
-}: ShownOnLoginPageCheckProps) => {
-  const { adminClient } = useAdminClient();
-  const { addAlert, addError } = useAlerts();
+  orgId,
+  property,
+}: {
+  row: IdentityProviderRepresentation;
+  orgId: string;
+  property: "autoMembership" | "membershipType";
+}) => {
   const { t } = useTranslation();
-
-  const toggle = async (value: boolean) => {
-    try {
-      await adminClient.identityProviders.update(
-        { alias: row.alias! },
-        {
-          ...row,
-          config: {
-            ...row.config,
-            "kc.org.broker.public": `${value}`,
-          },
-        },
-      );
-      addAlert(t("linkUpdatedSuccessful"));
-
-      refresh();
-    } catch (error) {
-      addError("linkUpdatedError", error);
-    }
-  };
-
-  return (
-    <Switch
-      label={t("on")}
-      labelOff={t("off")}
-      isChecked={row.config?.["kc.org.broker.public"] === "true"}
-      onChange={(_, value) => toggle(value)}
-    />
-  );
+  const link = row.organizationLinks?.find((l) => l.organizationId === orgId);
+  if (!link) return "—";
+  if (property === "autoMembership") {
+    return toUpperCase(String(link.autoMembership));
+  }
+  return t(link.membershipType || "UNMANAGED");
 };
 
 export const IdentityProviders = () => {
   const { adminClient } = useAdminClient();
   const { t } = useTranslation();
   const { id: orgId } = useParams<EditOrganizationParams>();
+  const { realm } = useRealm();
   const { addAlert, addError } = useAlerts();
 
   const [key, setKey] = useState(0);
@@ -85,8 +66,12 @@ export const IdentityProviders = () => {
     [],
   );
 
-  const loader = () =>
-    adminClient.organizations.listIdentityProviders({ orgId: orgId! });
+  const loader = async () => {
+    const providers = await adminClient.organizations.listIdentityProviders({
+      orgId: orgId!,
+    });
+    return sortBy(providers, "alias");
+  };
 
   const [toggleUnlinkDialog, UnlinkConfirm] = useConfirmDialog({
     titleKey: "identityProviderUnlink",
@@ -164,20 +149,55 @@ export const IdentityProviders = () => {
           columns={[
             {
               name: "alias",
-            },
-            {
-              name: "config['kc.org.domain']",
-              displayKey: "domain",
+              cellRenderer: (row) => (
+                <Button
+                  variant="link"
+                  isInline
+                  onClick={() => {
+                    setSelectedRow(row);
+                    toggleOpen();
+                  }}
+                >
+                  {row.alias}
+                </Button>
+              ),
             },
             {
               name: "providerId",
               displayKey: "providerDetails",
+              cellRenderer: (row) => (
+                <Link
+                  to={toIdentityProvider({
+                    realm,
+                    providerId: row.providerId!,
+                    alias: row.alias!,
+                    tab: "settings",
+                  })}
+                >
+                  {row.providerId} <ExternalLinkAltIcon />
+                </Link>
+              ),
             },
             {
-              name: "config['kc.org.broker.public']",
-              displayKey: "shownOnLoginPage",
+              name: "autoMembership",
+              displayKey: "autoMembership",
               cellRenderer: (row) => (
-                <ShownOnLoginPageCheck row={row} refresh={refresh} />
+                <OrgLinkProperty
+                  row={row}
+                  orgId={orgId!}
+                  property="autoMembership"
+                />
+              ),
+            },
+            {
+              name: "membershipType",
+              displayKey: "membershipType",
+              cellRenderer: (row) => (
+                <OrgLinkProperty
+                  row={row}
+                  orgId={orgId!}
+                  property="membershipType"
+                />
               ),
             },
           ]}

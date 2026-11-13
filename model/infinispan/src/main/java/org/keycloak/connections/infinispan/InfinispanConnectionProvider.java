@@ -21,12 +21,17 @@ import java.util.Arrays;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.function.Predicate;
 import java.util.stream.Stream;
+
+import org.keycloak.common.util.MultiSiteUtils;
+import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.provider.Provider;
 
 import org.infinispan.Cache;
 import org.infinispan.client.hotrod.RemoteCache;
-import org.keycloak.models.KeycloakSessionFactory;
-import org.keycloak.provider.Provider;
+import org.infinispan.commons.marshall.Marshaller;
+import org.infinispan.util.concurrent.BlockingManager;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -51,6 +56,7 @@ public interface InfinispanConnectionProvider extends Provider {
     String AUTHORIZATION_CACHE_NAME = "authorization";
     String AUTHORIZATION_REVISIONS_CACHE_NAME = "authorizationRevisions";
     int AUTHORIZATION_REVISIONS_CACHE_DEFAULT_MAX = 20000;
+    int SESSIONS_CACHE_DEFAULT_MAX = 10000;
 
     String ACTION_TOKEN_CACHE = "actionTokens";
     int ACTION_TOKEN_CACHE_DEFAULT_MAX = -1;
@@ -60,6 +66,9 @@ public interface InfinispanConnectionProvider extends Provider {
     String KEYS_CACHE_NAME = "keys";
     int KEYS_CACHE_DEFAULT_MAX = 1000;
     int KEYS_CACHE_MAX_IDLE_SECONDS = 3600;
+
+    String CRL_CACHE_NAME = "crl";
+    int CRL_CACHE_DEFAULT_MAX = 1000;
 
     // System property used on Wildfly to identify distributedCache address and sticky session route
     String JBOSS_NODE_NAME = "jboss.node.name";
@@ -82,7 +91,16 @@ public interface InfinispanConnectionProvider extends Provider {
             USER_REVISIONS_CACHE_NAME,
             AUTHORIZATION_CACHE_NAME,
             AUTHORIZATION_REVISIONS_CACHE_NAME,
-            KEYS_CACHE_NAME
+            KEYS_CACHE_NAME,
+            CRL_CACHE_NAME,
+    };
+
+    // list of cache name for user and client session caches, both offline and online
+    String[] USER_AND_CLIENT_SESSION_CACHES = {
+            USER_SESSION_CACHE_NAME,
+            CLIENT_SESSION_CACHE_NAME,
+            OFFLINE_USER_SESSION_CACHE_NAME,
+            OFFLINE_CLIENT_SESSION_CACHE_NAME,
     };
 
     // list of cache name which could be defined as distributed or replicated
@@ -98,6 +116,30 @@ public interface InfinispanConnectionProvider extends Provider {
     };
 
     String[] ALL_CACHES_NAME = Stream.concat(Arrays.stream(LOCAL_CACHE_NAMES), Arrays.stream(CLUSTERED_CACHE_NAMES)).toArray(String[]::new);
+
+    String[] LOCAL_MAX_COUNT_CACHES = new String[]{
+            AUTHORIZATION_CACHE_NAME,
+            CRL_CACHE_NAME,
+            KEYS_CACHE_NAME,
+            REALM_CACHE_NAME,
+            USER_CACHE_NAME
+    };
+
+    String[] CLUSTERED_MAX_COUNT_CACHES = new String[]{
+            CLIENT_SESSION_CACHE_NAME,
+            OFFLINE_USER_SESSION_CACHE_NAME,
+            OFFLINE_CLIENT_SESSION_CACHE_NAME,
+            USER_SESSION_CACHE_NAME
+    };
+
+    // caches that allow numOwner attribute to be configurable using options.
+    String[] CLUSTERED_CACHE_NUM_OWNERS = new String[]{
+            USER_SESSION_CACHE_NAME,
+            CLIENT_SESSION_CACHE_NAME,
+            LOGIN_FAILURE_CACHE_NAME,
+            AUTHENTICATION_SESSIONS_CACHE_NAME,
+            ACTION_TOKEN_CACHE,
+    };
 
     /**
      *
@@ -127,15 +169,22 @@ public interface InfinispanConnectionProvider extends Provider {
 
     /**
      * @return Information about cluster topology
+     * @deprecated The logic in {@link TopologyInfo} is not used anymore in Keycloak. To get the node or site name, use {@link #getNodeInfo()}.
      */
+    @Deprecated(since = "26.5", forRemoval = true)
     TopologyInfo getTopologyInfo();
 
     /**
-     * Migrates the JBoss Marshalling encoding to Infinispan Protostream
+     * @return The information about the local node.
+     */
+    NodeInfo getNodeInfo();
+
+    /**
+     * Migrates the JBoss Marshalling encoding to Infinispan ProtoStream
      *
      * @return A {@link CompletionStage} to signal when the operator is completed.
      */
-    CompletionStage<Void> migrateToProtostream();
+    CompletionStage<Void> migrateToProtoStream();
 
     /**
      * Returns an executor that will run the given tasks on a blocking thread as required.
@@ -146,7 +195,9 @@ public interface InfinispanConnectionProvider extends Provider {
      * @param name The name for trace logging purpose.
      * @return The Infinispan blocking {@link Executor}.
      */
-    Executor getExecutor(String name);
+    default Executor getExecutor(String name) {
+        return getBlockingManager().asExecutor(name);
+    }
 
     /**
      * @return The Infinispan {@link ScheduledExecutorService}. Long or blocking operations must not be executed directly.
@@ -164,4 +215,27 @@ public interface InfinispanConnectionProvider extends Provider {
         }
     }
 
+    /**
+     * Returns the Infinispan {@link BlockingManager}.
+     * <p>
+     * The {@link BlockingManager} should be used to execute blocking operation like disk I/O. It offloads the task to
+     * the Infinispan blocking thread pool.
+     *
+     * @return The Infinispan {@link BlockingManager}.
+     */
+    BlockingManager getBlockingManager();
+
+    static Stream<String> skipSessionsCacheIfRequired(Stream<String> caches) {
+        if (!MultiSiteUtils.isPersistentSessionsEnabled()) {
+            return caches;
+        }
+        // persistent-user-sessions enabled, we do not need the sessions caches from external Infinispan.
+        return caches
+                .filter(Predicate.isEqual(USER_SESSION_CACHE_NAME).negate())
+                .filter(Predicate.isEqual(OFFLINE_USER_SESSION_CACHE_NAME).negate())
+                .filter(Predicate.isEqual(CLIENT_SESSION_CACHE_NAME).negate())
+                .filter(Predicate.isEqual(OFFLINE_CLIENT_SESSION_CACHE_NAME).negate());
+    }
+
+    Marshaller getMarshaller();
 }

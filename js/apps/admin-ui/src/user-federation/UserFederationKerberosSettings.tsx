@@ -1,4 +1,5 @@
 import type ComponentRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentRepresentation";
+import { useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
   AlertVariant,
@@ -10,9 +11,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useRealm } from "../context/realm-context/RealmContext";
-import { useFetch } from "../utils/useFetch";
 import { useParams } from "../utils/useParams";
 import { KerberosSettingsRequired } from "./kerberos/KerberosSettingsRequired";
 import { toUserFederation } from "./routes/UserFederation";
@@ -55,7 +54,7 @@ export default function UserFederationKerberosSettings() {
     try {
       if (!id) {
         await adminClient.components.create(component);
-        navigate(`/${realm}/user-federation`);
+        void navigate(`/${realm}/user-federation`);
       } else {
         await adminClient.components.update({ id }, component);
       }
@@ -92,7 +91,7 @@ export default function UserFederationKerberosSettings() {
             </Button>
             <Button
               variant="link"
-              onClick={() => navigate(toUserFederation({ realm }))}
+              onClick={() => void navigate(toUserFederation({ realm }))}
               data-testid="kerberos-cancel"
             >
               {t("cancel")}

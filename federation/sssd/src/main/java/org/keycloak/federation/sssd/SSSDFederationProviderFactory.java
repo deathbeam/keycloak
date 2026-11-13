@@ -17,10 +17,6 @@
 
 package org.keycloak.federation.sssd;
 
-import org.freedesktop.dbus.connections.impl.DBusConnection;
-import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
-import org.freedesktop.dbus.exceptions.DBusException;
-import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.federation.sssd.impl.AvailabilityChecker;
@@ -30,6 +26,12 @@ import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.provider.EnvironmentDependentProviderFactory;
 import org.keycloak.storage.UserStorageProviderFactory;
 import org.keycloak.storage.UserStorageProviderModel;
+
+import org.checkerframework.checker.mustcall.qual.NotOwning;
+import org.freedesktop.dbus.connections.impl.DBusConnection;
+import org.freedesktop.dbus.connections.impl.DBusConnectionBuilder;
+import org.freedesktop.dbus.exceptions.DBusException;
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:bruno@abstractj.org">Bruno Oliveira</a>
@@ -74,6 +76,7 @@ public class SSSDFederationProviderFactory implements UserStorageProviderFactory
         return new PAMAuthenticator(username, factors);
     }
 
+    @NotOwning
     protected DBusConnection getDbusConnection() {
         return dbusConnection;
     }
@@ -83,7 +86,10 @@ public class SSSDFederationProviderFactory implements UserStorageProviderFactory
             synchronized (this) {
                 if (dbusConnection == null) {
                     try {
-                        dbusConnection = DBusConnectionBuilder.forSystemBus().build();
+                        // Owned by this factory; close() calls disconnect(), which DBus defines as equivalent to close().
+                        @SuppressWarnings("required.method.not.called")
+                        DBusConnection connection = DBusConnectionBuilder.forSystemBus().build();
+                        dbusConnection = connection;
                     } catch(DBusException e) {
                         // should not happen as it should be supported to get this point
                         throw new IllegalStateException("Cannot create DBUS connection", e);

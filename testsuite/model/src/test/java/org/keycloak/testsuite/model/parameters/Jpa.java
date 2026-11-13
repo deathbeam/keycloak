@@ -1,13 +1,13 @@
 /*
  * Copyright 2020 Red Hat, Inc. and/or its affiliates
  * and other contributors as indicated by the @author tags.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,6 +16,9 @@
  */
 package org.keycloak.testsuite.model.parameters;
 
+import java.util.Set;
+
+import org.keycloak.authentication.jpa.JpaAuthenticationSessionProviderFactory;
 import org.keycloak.authorization.jpa.store.JPAAuthorizationStoreFactory;
 import org.keycloak.broker.provider.IdentityProviderFactory;
 import org.keycloak.broker.provider.IdentityProviderSpi;
@@ -27,27 +30,46 @@ import org.keycloak.connections.jpa.updater.liquibase.conn.LiquibaseConnectionPr
 import org.keycloak.connections.jpa.updater.liquibase.conn.LiquibaseConnectionSpi;
 import org.keycloak.connections.jpa.updater.liquibase.lock.LiquibaseDBLockProviderFactory;
 import org.keycloak.events.jpa.JpaEventStoreProviderFactory;
-import org.keycloak.models.dblock.DBLockSpi;
-import org.keycloak.models.jpa.session.JpaUserSessionPersisterProviderFactory;
-import org.keycloak.models.session.UserSessionPersisterSpi;
+import org.keycloak.executors.DefaultExecutorsProviderFactory;
+import org.keycloak.executors.ExecutorsSpi;
+import org.keycloak.loginfailures.jpa.JpaUserLoginFailureProviderFactory;
 import org.keycloak.migration.MigrationProviderFactory;
 import org.keycloak.migration.MigrationSpi;
-import org.keycloak.testsuite.model.KeycloakModelParameters;
+import org.keycloak.models.IdentityProviderStorageSpi;
+import org.keycloak.models.RevokedTokenSpi;
+import org.keycloak.models.SingleUseObjectSpi;
+import org.keycloak.models.UserLoginFailureSpi;
+import org.keycloak.models.dblock.DBLockSpi;
 import org.keycloak.models.jpa.JpaClientProviderFactory;
 import org.keycloak.models.jpa.JpaClientScopeProviderFactory;
 import org.keycloak.models.jpa.JpaGroupProviderFactory;
+import org.keycloak.models.jpa.JpaIdentityProviderStorageProviderFactory;
 import org.keycloak.models.jpa.JpaRealmProviderFactory;
 import org.keycloak.models.jpa.JpaRoleProviderFactory;
 import org.keycloak.models.jpa.JpaUserProviderFactory;
-import org.keycloak.provider.ProviderFactory;
-import org.keycloak.provider.Spi;
-import org.keycloak.storage.DatastoreSpi;
-import org.keycloak.storage.datastore.DefaultDatastoreProviderFactory;
-import org.keycloak.testsuite.model.Config;
-import com.google.common.collect.ImmutableSet;
-import java.util.Set;
+import org.keycloak.models.jpa.session.JpaRevokedTokensPersisterProviderFactory;
+import org.keycloak.models.jpa.session.JpaUserSessionPersisterProviderFactory;
+import org.keycloak.models.session.RevokedTokenPersisterSpi;
+import org.keycloak.models.session.UserSessionPersisterSpi;
+import org.keycloak.organization.OrganizationSpi;
+import org.keycloak.organization.jpa.JpaOrganizationProviderFactory;
 import org.keycloak.protocol.LoginProtocolFactory;
 import org.keycloak.protocol.LoginProtocolSpi;
+import org.keycloak.provider.ProviderFactory;
+import org.keycloak.provider.Spi;
+import org.keycloak.revoketokens.jpa.JpaRevokedTokenProviderFactory;
+import org.keycloak.sessions.AuthenticationSessionSpi;
+import org.keycloak.singleobject.jpa.JpaSingleUseObjectProviderFactory;
+import org.keycloak.storage.DatastoreSpi;
+import org.keycloak.storage.configuration.ServerConfigurationStorageProviderSpi;
+import org.keycloak.storage.configuration.jpa.JpaServerConfigStorageProviderFactory;
+import org.keycloak.storage.datastore.DefaultDatastoreProviderFactory;
+import org.keycloak.testsuite.model.Config;
+import org.keycloak.testsuite.model.KeycloakModelParameters;
+import org.keycloak.timer.TimerSpi;
+import org.keycloak.timer.basic.BasicTimerProviderFactory;
+
+import com.google.common.collect.ImmutableSet;
 
 /**
  *
@@ -61,8 +83,15 @@ public class Jpa extends KeycloakModelParameters {
       .add(JpaUpdaterSpi.class)
       .add(LiquibaseConnectionSpi.class)
       .add(UserSessionPersisterSpi.class)
-
+      .add(RevokedTokenPersisterSpi.class)
+      .add(AuthenticationSessionSpi.class)
+      .add(RevokedTokenSpi.class)
+      .add(SingleUseObjectSpi.class)
+      .add(UserLoginFailureSpi.class)
+      .add(ServerConfigurationStorageProviderSpi.class)
       .add(DatastoreSpi.class)
+      .add(TimerSpi.class)
+      .add(ExecutorsSpi.class)
 
       //required for migrateModel
       .add(MigrationSpi.class)
@@ -71,7 +100,10 @@ public class Jpa extends KeycloakModelParameters {
       .add(DBLockSpi.class)
 
       //required for FederatedIdentityModel
+      .add(IdentityProviderStorageSpi.class)
       .add(IdentityProviderSpi.class)
+
+      .add(OrganizationSpi.class)
 
       .build();
 
@@ -85,6 +117,7 @@ public class Jpa extends KeycloakModelParameters {
       .add(JpaClientScopeProviderFactory.class)
       .add(JpaEventStoreProviderFactory.class)
       .add(JpaGroupProviderFactory.class)
+      .add(JpaIdentityProviderStorageProviderFactory.class)
       .add(JpaRealmProviderFactory.class)
       .add(JpaRoleProviderFactory.class)
       .add(JpaUpdaterProviderFactory.class)
@@ -92,6 +125,14 @@ public class Jpa extends KeycloakModelParameters {
       .add(LiquibaseConnectionProviderFactory.class)
       .add(LiquibaseDBLockProviderFactory.class)
       .add(JpaUserSessionPersisterProviderFactory.class)
+      .add(JpaRevokedTokensPersisterProviderFactory.class)
+      .add(JpaAuthenticationSessionProviderFactory.class)
+      .add(JpaRevokedTokenProviderFactory.class)
+      .add(JpaSingleUseObjectProviderFactory.class)
+      .add(JpaUserLoginFailureProviderFactory.class)
+      .add(JpaServerConfigStorageProviderFactory.class)
+      .add(BasicTimerProviderFactory.class)
+      .add(DefaultExecutorsProviderFactory.class)
 
       //required for migrateModel
       .add(MigrationProviderFactory.class)
@@ -99,6 +140,8 @@ public class Jpa extends KeycloakModelParameters {
 
       //required for FederatedIdentityModel
       .add(IdentityProviderFactory.class)
+
+      .add(JpaOrganizationProviderFactory.class)
 
       .build();
 
@@ -116,11 +159,20 @@ public class Jpa extends KeycloakModelParameters {
         cf.spi("client").defaultProvider("jpa")
           .spi("clientScope").defaultProvider("jpa")
           .spi("group").defaultProvider("jpa")
+          .spi("idp").defaultProvider("jpa")
           .spi("role").defaultProvider("jpa")
           .spi("user").defaultProvider("jpa")
           .spi("realm").defaultProvider("jpa")
           .spi("deploymentState").defaultProvider("jpa")
           .spi("dblock").defaultProvider("jpa")
         ;
+// Use this for running model tests with Postgres database
+//        cf.spi("connectionsJpa")
+//                .provider("default")
+//                .config("url", "jdbc:postgresql://localhost:5432/keycloakDB")
+//                .config("user", "keycloak")
+//                .config("password", "pass")
+//                .config("driver", "org.postgresql.Driver");
+//
     }
 }

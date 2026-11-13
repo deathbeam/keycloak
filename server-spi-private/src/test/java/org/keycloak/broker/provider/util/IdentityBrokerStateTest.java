@@ -1,10 +1,13 @@
 package org.keycloak.broker.provider.util;
 
-import org.junit.Assert;
-import org.junit.Test;
+import java.io.IOException;
+
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.RealmModel;
 import org.keycloak.protocol.ClientData;
+
+import org.junit.Assert;
+import org.junit.Test;
 
 
 public class IdentityBrokerStateTest {
@@ -48,7 +51,7 @@ public class IdentityBrokerStateTest {
     }
 
     @Test
-    public void testDecodedWithClientIdAnActualUuidBASE64UriFriendly() {
+    public void testDecodedWithClientIdAnActualUuidBASE64UriFriendly() throws IOException {
 
         // Given
         String state = "gNrGamIDGKpKSI9yOrcFzYTKoFGH779_WNCacAelkhk";
@@ -90,7 +93,7 @@ public class IdentityBrokerStateTest {
     }
 
     @Test
-    public void testEncodedWithClientIdNotUUid() {
+    public void testEncodedWithClientIdNotUUid() throws IOException {
         // Given
         String encoded = "gNrGamIDGKpKSI9yOrcFzYTKoFGH779_WNCacAelkhk.vpISZLVDAc0.aHR0cDovL2kuYW0uYW4udXJs";
         String clientId = "http://i.am.an.url";
@@ -107,7 +110,7 @@ public class IdentityBrokerStateTest {
     }
 
     @Test
-    public void testEncodedWithClientData() {
+    public void testEncodedWithClientData() throws IOException {
         // Given
         String encoded = "gNrGamIDGKpKSI9yOrcFzYTKoFGH779_WNCacAelkhk.vpISZLVDAc0.aHR0cDovL2kuYW0uYW4udXJs.eyJydSI6Imh0dHBzOi8vbXktcmVkaXJlY3QtdXJpIiwicnQiOiJjb2RlIiwicm0iOiJxdWVyeSIsInN0Ijoic29tZS1zdGF0ZSJ9";
         String clientId = "http://i.am.an.url";

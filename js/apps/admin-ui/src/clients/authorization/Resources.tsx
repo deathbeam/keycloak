@@ -1,5 +1,11 @@
+import type PolicyRepresentation from "@keycloak/keycloak-admin-client/lib/defs/policyRepresentation";
 import type ResourceRepresentation from "@keycloak/keycloak-admin-client/lib/defs/resourceRepresentation";
-import type ResourceServerRepresentation from "@keycloak/keycloak-admin-client/lib/defs/resourceServerRepresentation";
+import {
+  ListEmptyState,
+  PaginatingTableToolbar,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
 import {
   Alert,
   AlertVariant,
@@ -10,6 +16,7 @@ import {
 import {
   ExpandableRowContent,
   Table,
+  TableText,
   Tbody,
   Td,
   Th,
@@ -20,13 +27,9 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
-import { KeycloakSpinner } from "../../components/keycloak-spinner/KeycloakSpinner";
-import { ListEmptyState } from "../../components/list-empty-state/ListEmptyState";
-import { PaginatingTableToolbar } from "../../components/table-toolbar/PaginatingTableToolbar";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { useRealm } from "../../context/realm-context/RealmContext";
-import { useFetch } from "../../utils/useFetch";
 import { toNewPermission } from "../routes/NewPermission";
 import { toCreateResource } from "../routes/NewResource";
 import { toResourceDetails } from "../routes/Resource";
@@ -44,9 +47,9 @@ type ExpandableResourceRepresentation = ResourceRepresentation & {
 };
 
 const UriRenderer = ({ row }: { row: ResourceRepresentation }) => (
-  <>
+  <TableText wrapModifier="truncate">
     {row.uris?.[0]} <MoreLabel array={row.uris} />
-  </>
+  </TableText>
 );
 
 export const AuthorizationResources = ({
@@ -64,8 +67,7 @@ export const AuthorizationResources = ({
     useState<ExpandableResourceRepresentation[]>();
   const [selectedResource, setSelectedResource] =
     useState<ResourceRepresentation>();
-  const [permissions, setPermission] =
-    useState<ResourceServerRepresentation[]>();
+  const [permissions, setPermission] = useState<PolicyRepresentation[]>();
 
   const [key, setKey] = useState(0);
   const refresh = () => setKey(key + 1);
@@ -133,7 +135,14 @@ export const AuthorizationResources = ({
           resourceId: selectedResource?._id!,
         });
         addAlert(t("resourceDeletedSuccess"), AlertVariant.success);
-        refresh();
+
+        if (resources?.length === 1 && first > 0) {
+          // Go back one page. Changing 'first' will automatically re-trigger
+          // the useFetch hook, so we don't need to call refresh() here.
+          setFirst(first - max);
+        } else {
+          refresh();
+        }
       } catch (error) {
         addError("resourceDeletedError", error);
       }
@@ -205,7 +214,7 @@ export const AuthorizationResources = ({
                   )}
                 </Tr>
               </Thead>
-              {resources.map((resource, rowIndex) => (
+              {resources.slice(0, max).map((resource, rowIndex) => (
                 <Tbody key={resource._id} isExpanded={resource.isExpanded}>
                   <Tr>
                     <Td
@@ -226,19 +235,33 @@ export const AuthorizationResources = ({
                       }}
                     />
                     <Td data-testid={`name-column-${resource.name}`}>
-                      <Link
-                        to={toResourceDetails({
-                          realm,
-                          id: clientId,
-                          resourceId: resource._id!,
-                        })}
-                      >
-                        {resource.name}
-                      </Link>
+                      <TableText wrapModifier="truncate">
+                        <Link
+                          to={toResourceDetails({
+                            realm,
+                            id: clientId,
+                            resourceId: resource._id!,
+                          })}
+                        >
+                          {resource.name}
+                        </Link>
+                      </TableText>
                     </Td>
-                    <Td>{resource.displayName}</Td>
-                    <Td>{resource.type}</Td>
-                    <Td>{resource.owner?.name}</Td>
+                    <Td>
+                      <TableText wrapModifier="truncate">
+                        {resource.displayName}
+                      </TableText>
+                    </Td>
+                    <Td>
+                      <TableText wrapModifier="truncate">
+                        {resource.type}
+                      </TableText>
+                    </Td>
+                    <Td>
+                      <TableText wrapModifier="truncate">
+                        {resource.owner?.name}
+                      </TableText>
+                    </Td>
                     <Td>
                       <UriRenderer row={resource} />
                     </Td>
@@ -318,7 +341,7 @@ export const AuthorizationResources = ({
           isDisabled={isDisabled}
           primaryActionText={t("createResource")}
           onPrimaryAction={() =>
-            navigate(toCreateResource({ realm, id: clientId }))
+            void navigate(toCreateResource({ realm, id: clientId }))
           }
         />
       )}

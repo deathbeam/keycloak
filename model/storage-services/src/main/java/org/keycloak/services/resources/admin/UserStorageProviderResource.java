@@ -16,27 +16,12 @@
  */
 package org.keycloak.services.resources.admin;
 
-import org.jboss.logging.Logger;
-import org.jboss.resteasy.reactive.NoCache;
-import jakarta.ws.rs.NotFoundException;
-import org.keycloak.common.ClientConnection;
-import org.keycloak.component.ComponentModel;
-import org.keycloak.events.admin.OperationType;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.RealmModel;
-import org.keycloak.services.ServicesLogger;
-import org.keycloak.storage.managers.UserStorageSyncManager;
-import org.keycloak.services.ErrorResponse;
-import org.keycloak.services.managers.LDAPServerCapabilitiesManager;
-import org.keycloak.services.resources.admin.permissions.AdminPermissionEvaluator;
-import org.keycloak.storage.UserStorageProvider;
-import org.keycloak.storage.UserStorageProviderModel;
-import org.keycloak.storage.ldap.LDAPStorageProvider;
-import org.keycloak.storage.ldap.mappers.LDAPStorageMapper;
-import org.keycloak.storage.user.SynchronizationResult;
+import java.util.HashMap;
+import java.util.Map;
 
 import jakarta.ws.rs.BadRequestException;
 import jakarta.ws.rs.GET;
+import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
@@ -45,8 +30,26 @@ import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
-import java.util.HashMap;
-import java.util.Map;
+
+import org.keycloak.authorization.fgap.AdminPermissionsSchema;
+import org.keycloak.common.ClientConnection;
+import org.keycloak.component.ComponentModel;
+import org.keycloak.events.admin.OperationType;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.models.RealmModel;
+import org.keycloak.services.ErrorResponse;
+import org.keycloak.services.ServicesLogger;
+import org.keycloak.services.managers.LDAPServerCapabilitiesManager;
+import org.keycloak.services.resources.admin.fgap.AdminPermissionEvaluator;
+import org.keycloak.storage.UserStoragePrivateUtil;
+import org.keycloak.storage.UserStorageProvider;
+import org.keycloak.storage.UserStorageProviderModel;
+import org.keycloak.storage.ldap.mappers.LDAPStorageMapper;
+import org.keycloak.storage.user.SynchronizationResult;
+
+import org.jboss.logging.Logger;
+import org.jboss.resteasy.reactive.NoCache;
 
 /**
  * @resource User Storage Provider
@@ -147,18 +150,19 @@ public class UserStorageProviderResource {
 
         logger.debug("Syncing users");
 
-        UserStorageSyncManager syncManager = new UserStorageSyncManager();
         SynchronizationResult syncResult;
+        KeycloakSessionFactory sessionFactory = session.getKeycloakSessionFactory();
+
         if ("triggerFullSync".equals(action)) {
             try {
-                syncResult = syncManager.syncAllUsers(session.getKeycloakSessionFactory(), realm.getId(), providerModel);
+                syncResult = UserStoragePrivateUtil.runFullSync(sessionFactory, providerModel);
             } catch(Exception e) {
                 String errorMsg = getErrorCode(e);
                 throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
             }
         } else if ("triggerChangedUsersSync".equals(action)) {
             try {
-                syncResult = syncManager.syncChangedUsers(session.getKeycloakSessionFactory(), realm.getId(), providerModel);
+                syncResult = UserStoragePrivateUtil.runPeriodicSync(sessionFactory, providerModel);
             } catch(Exception e) {
                 String errorMsg = getErrorCode(e);
                 throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
@@ -245,29 +249,30 @@ public class UserStorageProviderResource {
         ComponentModel mapperModel = realm.getComponent(mapperId);
         if (mapperModel == null) throw new NotFoundException("Mapper model not found");
 
-        LDAPStorageProvider ldapProvider = (LDAPStorageProvider) session.getProvider(UserStorageProvider.class, parentModel);
+        session.getProvider(UserStorageProvider.class, parentModel);
         LDAPStorageMapper mapper = session.getProvider(LDAPStorageMapper.class, mapperModel);
 
         ServicesLogger.LOGGER.syncingDataForMapper(mapperModel.getName(), mapperModel.getProviderId(), direction);
 
-        SynchronizationResult syncResult;
-        if ("fedToKeycloak".equals(direction)) {
-            try {
-                syncResult = mapper.syncDataFromFederationProviderToKeycloak(realm);
-            } catch(Exception e) {
-                String errorMsg = getErrorCode(e);
-                throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
+        SynchronizationResult syncResult = AdminPermissionsSchema.runWithoutAuthorization(session, () -> {
+            if ("fedToKeycloak".equals(direction)) {
+                try {
+                    return mapper.syncDataFromFederationProviderToKeycloak(realm);
+                } catch(Exception e) {
+                    String errorMsg = getErrorCode(e);
+                    throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
+                }
+            } else if ("keycloakToFed".equals(direction)) {
+                try {
+                    return mapper.syncDataFromKeycloakToFederationProvider(realm);
+                } catch(Exception e) {
+                    String errorMsg = getErrorCode(e);
+                    throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
+                }
+            } else {
+                throw new BadRequestException("Unknown direction: " + direction);
             }
-        } else if ("keycloakToFed".equals(direction)) {
-            try {
-                syncResult = mapper.syncDataFromKeycloakToFederationProvider(realm);
-            } catch(Exception e) {
-                String errorMsg = getErrorCode(e);
-                throw ErrorResponse.error(errorMsg, Response.Status.BAD_REQUEST);
-            }
-        } else {
-            throw new BadRequestException("Unknown direction: " + direction);
-        }
+        });
 
         Map<String, Object> eventRep = new HashMap<>();
         eventRep.put("action", direction);

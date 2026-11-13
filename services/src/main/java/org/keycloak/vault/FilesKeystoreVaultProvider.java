@@ -1,12 +1,9 @@
 package org.keycloak.vault;
 
-import java.nio.ByteBuffer;
-
-import org.jboss.logging.Logger;
-
-import jakarta.annotation.Nonnull;
 import java.io.IOException;
+import java.io.InputStream;
 import java.lang.invoke.MethodHandles;
+import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.Key;
@@ -17,6 +14,10 @@ import java.security.UnrecoverableEntryException;
 import java.security.cert.CertificateException;
 import java.util.List;
 import java.util.Optional;
+
+import jakarta.annotation.Nonnull;
+
+import org.jboss.logging.Logger;
 
 public class FilesKeystoreVaultProvider extends AbstractVaultProvider {
 
@@ -52,7 +53,9 @@ public class FilesKeystoreVaultProvider extends AbstractVaultProvider {
                 throw new VaultNotFoundException("The keystore file for Keycloak Vault was not found");
             }
             ks = KeyStore.getInstance(keystoreType);
-            ks.load(Files.newInputStream(keystorePath.toRealPath()), keystorePass.toCharArray());
+            try (InputStream is = Files.newInputStream(keystorePath.toRealPath())) {
+                ks.load(is, keystorePass.toCharArray());
+            }
             key = ks.getKey(alias, keystorePass.toCharArray());
             if (key == null) {
                 logger.warnf("Cannot find secret %s in %s", alias, keystorePath);

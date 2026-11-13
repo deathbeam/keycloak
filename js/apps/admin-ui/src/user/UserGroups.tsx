@@ -14,13 +14,14 @@ import { intersectionBy, sortBy, uniqBy } from "lodash-es";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { GroupPath } from "../components/group/GroupPath";
 import { GroupPickerDialog } from "../components/group/GroupPickerDialog";
-import { ListEmptyState } from "../components/list-empty-state/ListEmptyState";
-import { KeycloakDataTable } from "../components/table-toolbar/KeycloakDataTable";
+import { ListEmptyState } from "@keycloak/keycloak-ui-shared";
+import { KeycloakDataTable } from "@keycloak/keycloak-ui-shared";
 import { useAccess } from "../context/access/Access";
+import { GroupResourceContext } from "../context/group-resource/GroupResourceContext";
 
 type UserGroupsProps = {
   user: UserRepresentation;
@@ -152,20 +153,22 @@ export const UserGroups = ({ user }: UserGroupsProps) => {
     <>
       <DeleteConfirm />
       {open && (
-        <GroupPickerDialog
-          id={user.id}
-          type="selectMany"
-          text={{
-            title: t("joinGroupsFor", { username: user.username }),
-            ok: "join",
-          }}
-          canBrowse={isManager}
-          onClose={() => setOpen(false)}
-          onConfirm={async (groups = []) => {
-            await addGroups(groups);
-            setOpen(false);
-          }}
-        />
+        <GroupResourceContext value={adminClient.groups}>
+          <GroupPickerDialog
+            id={user.id}
+            type="selectMany"
+            text={{
+              title: t("joinGroupsFor", { username: user.username }),
+              ok: "join",
+            }}
+            canBrowse={isManager}
+            onClose={() => setOpen(false)}
+            onConfirm={async (groups = []) => {
+              await addGroups(groups);
+              setOpen(false);
+            }}
+          />
+        </GroupResourceContext>
       )}
       <KeycloakDataTable
         key={key}
@@ -205,13 +208,14 @@ export const UserGroups = ({ user }: UserGroupsProps) => {
                 refresh();
               }}
               isChecked={isDirectMembership}
-              className="direct-membership-check"
+              className="pf-v5-u-mt-sm"
             />
             <Button
               onClick={() => leave(selectedGroups)}
               data-testid="leave-group-button"
               variant="link"
               isDisabled={selectedGroups.length === 0}
+              className="pf-v5-u-ml-md"
             >
               {t("leave")}
             </Button>

@@ -17,6 +17,13 @@
 
 package org.keycloak.testsuite.federation.kerberos;
 
+import java.security.PrivilegedExceptionAction;
+import javax.security.auth.Subject;
+
+import org.keycloak.federation.kerberos.CommonKerberosConfig;
+import org.keycloak.federation.kerberos.KerberosPrincipal;
+import org.keycloak.federation.kerberos.impl.KerberosUsernamePasswordAuthenticator;
+
 import org.apache.http.auth.AuthScheme;
 import org.apache.http.auth.Credentials;
 import org.apache.http.impl.auth.SPNegoScheme;
@@ -28,12 +35,6 @@ import org.ietf.jgss.GSSException;
 import org.ietf.jgss.GSSManager;
 import org.ietf.jgss.GSSName;
 import org.ietf.jgss.Oid;
-import org.keycloak.federation.kerberos.CommonKerberosConfig;
-import org.keycloak.federation.kerberos.impl.KerberosUsernamePasswordAuthenticator;
-
-import javax.security.auth.Subject;
-
-import java.security.PrivilegedExceptionAction;
 
 /**
  * Usable for testing only. Username and password are shared for the whole factory
@@ -43,20 +44,27 @@ import java.security.PrivilegedExceptionAction;
 public class KeycloakSPNegoSchemeFactory extends SPNegoSchemeFactory {
 
     private final CommonKerberosConfig kerberosConfig;
+    private final boolean credDelegEnabled;
 
     private String username;
     private String password;
+    private GSSContext gssContext;
 
 
-    public KeycloakSPNegoSchemeFactory(CommonKerberosConfig kerberosConfig) {
+    public KeycloakSPNegoSchemeFactory(CommonKerberosConfig kerberosConfig, boolean credDelegEnabled) {
         super(true, false);
         this.kerberosConfig = kerberosConfig;
+        this.credDelegEnabled = credDelegEnabled;
     }
 
 
     public void setCredentials(String username, String password) {
         this.username = username;
         this.password = password;
+    }
+
+    public GSSContext getGssContext() {
+        return gssContext;
     }
 
 
@@ -80,7 +88,13 @@ public class KeycloakSPNegoSchemeFactory extends SPNegoSchemeFactory {
 
         @Override
         protected byte[] generateGSSToken(byte[] input, Oid oid, String authServer, Credentials credentials) throws GSSException {
-            KerberosUsernamePasswordAuthenticator authenticator = new KerberosUsernamePasswordAuthenticator(kerberosConfig);
+            // Emulates a Kerberos client of any realm, so the allowed realms check of the server must not apply
+            KerberosUsernamePasswordAuthenticator authenticator = new KerberosUsernamePasswordAuthenticator(kerberosConfig) {
+                @Override
+                public String getKerberosPrincipal(String username) {
+                    return username.contains("@") ? new KerberosPrincipal(username).toString() : username + "@" + kerberosConfig.getKerberosRealm();
+                }
+            };
 
             try {
                 Subject clientSubject = authenticator.authenticateSubject(username, password);
@@ -118,10 +132,10 @@ public class KeycloakSPNegoSchemeFactory extends SPNegoSchemeFactory {
                 GSSManager manager = getManager();
                 String httPrincipal = kerberosConfig.getServerPrincipal().replaceFirst("/.*@", "/" + authServer + "@");
                 GSSName serverName = manager.createName(httPrincipal, null);
-                GSSContext gssContext = manager.createContext(
+                gssContext = manager.createContext(
                         serverName.canonicalize(oid), oid, null, GSSContext.DEFAULT_LIFETIME);
                 gssContext.requestMutualAuth(true);
-                gssContext.requestCredDeleg(true);
+                gssContext.requestCredDeleg(credDelegEnabled);
                 byte[] outputToken = gssContext.initSecContext(token, 0, token.length);
 
                 ByteArrayHolder result = new ByteArrayHolder();

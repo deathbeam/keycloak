@@ -20,12 +20,13 @@ package org.keycloak.models.cache.infinispan.events;
 import java.util.Objects;
 import java.util.Set;
 
-import org.infinispan.protostream.annotations.ProtoFactory;
-import org.infinispan.protostream.annotations.ProtoField;
-import org.infinispan.protostream.annotations.ProtoTypeId;
 import org.keycloak.marshalling.Marshalling;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.cache.infinispan.RealmCacheManager;
+
+import org.infinispan.protostream.annotations.ProtoFactory;
+import org.infinispan.protostream.annotations.ProtoField;
+import org.infinispan.protostream.annotations.ProtoTypeId;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -46,7 +47,7 @@ public class GroupRemovedEvent extends InvalidationEvent implements RealmCacheIn
 
     @ProtoFactory
     static GroupRemovedEvent protoFactory(String id, String realmId, String parentId) {
-        return new GroupRemovedEvent(id, realmId, Marshalling.emptyStringToNull(parentId));
+        return new GroupRemovedEvent(id, realmId, parentId);
     }
 
     public static GroupRemovedEvent create(GroupModel group, String realmId) {

@@ -17,44 +17,84 @@
 
 package org.keycloak.models.jpa;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.function.Predicate;
+import java.util.stream.Stream;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.LockModeType;
+import jakarta.persistence.TypedQuery;
+
 import org.keycloak.Config;
-import org.jboss.logging.Logger;
 import org.keycloak.authentication.RequiredActionFactory;
 import org.keycloak.authentication.RequiredActionProvider;
-import org.keycloak.broker.provider.IdentityProvider;
-import org.keycloak.broker.provider.IdentityProviderFactory;
-import org.keycloak.broker.social.SocialIdentityProvider;
 import org.keycloak.common.enums.SslRequired;
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.common.util.Time;
 import org.keycloak.component.ComponentFactory;
 import org.keycloak.component.ComponentModel;
-import org.keycloak.models.*;
+import org.keycloak.models.AuthenticationExecutionModel;
+import org.keycloak.models.AuthenticationFlowModel;
+import org.keycloak.models.AuthenticatorConfigModel;
+import org.keycloak.models.CibaConfig;
+import org.keycloak.models.ClientInitialAccessModel;
+import org.keycloak.models.ClientModel;
+import org.keycloak.models.ClientScopeModel;
+import org.keycloak.models.Constants;
+import org.keycloak.models.GroupModel;
 import org.keycloak.models.GroupModel.GroupUpdatedEvent;
-import org.keycloak.models.jpa.entities.*;
+import org.keycloak.models.IdentityProviderMapperModel;
+import org.keycloak.models.IdentityProviderModel;
+import org.keycloak.models.IdentityProviderQuery;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.ModelDuplicateException;
+import org.keycloak.models.ModelException;
+import org.keycloak.models.OAuth2DeviceConfig;
+import org.keycloak.models.OTPPolicy;
+import org.keycloak.models.ParConfig;
+import org.keycloak.models.PasswordPolicy;
+import org.keycloak.models.RealmModel;
+import org.keycloak.models.RequiredActionConfigModel;
+import org.keycloak.models.RequiredActionProviderModel;
+import org.keycloak.models.RequiredCredentialModel;
+import org.keycloak.models.RoleModel;
+import org.keycloak.models.StorageProviderRealmModel;
+import org.keycloak.models.WebAuthnPolicy;
+import org.keycloak.models.WebAuthnPolicyPasswordlessDefaults;
+import org.keycloak.models.WebAuthnPolicyTwoFactorDefaults;
+import org.keycloak.models.jpa.entities.AuthenticationExecutionEntity;
+import org.keycloak.models.jpa.entities.AuthenticationFlowEntity;
+import org.keycloak.models.jpa.entities.AuthenticatorConfigEntity;
+import org.keycloak.models.jpa.entities.ClientEntity;
+import org.keycloak.models.jpa.entities.ClientInitialAccessEntity;
+import org.keycloak.models.jpa.entities.ComponentConfigEntity;
+import org.keycloak.models.jpa.entities.ComponentEntity;
+import org.keycloak.models.jpa.entities.DefaultClientScopeRealmMappingEntity;
+import org.keycloak.models.jpa.entities.RealmAttributeEntity;
+import org.keycloak.models.jpa.entities.RealmAttributes;
+import org.keycloak.models.jpa.entities.RealmEntity;
+import org.keycloak.models.jpa.entities.RealmLocalizationTextsEntity;
+import org.keycloak.models.jpa.entities.RequiredActionProviderEntity;
+import org.keycloak.models.jpa.entities.RequiredCredentialEntity;
 import org.keycloak.models.utils.ComponentUtil;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.representations.idm.RealmRepresentation;
 
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.LockModeType;
-import jakarta.persistence.TypedQuery;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
-import java.util.Collections;
-import java.util.Collection;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Arrays;
-import java.util.Optional;
-import java.util.function.Predicate;
-import java.util.stream.Stream;
+import org.jboss.logging.Logger;
 
 import static java.util.Objects.nonNull;
+
 import static org.keycloak.utils.StreamsUtil.closing;
 
 /**
@@ -81,6 +121,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         this.realm = realm;
     }
 
+    @Override
     public RealmEntity getEntity() {
         return realm;
     }
@@ -97,18 +138,22 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     @Override
     public void setName(String name) {
+        if (Objects.equals(getName(), name)) {
+            return;
+        }
         realm.setName(name);
+        // Flush here to trigger the unique constraint name
         em.flush();
     }
 
     @Override
     public String getDisplayName() {
-        return getAttribute(RealmAttributes.DISPLAY_NAME);
+        return realm.getDisplayName();
     }
 
     @Override
     public void setDisplayName(String displayName) {
-        setAttribute(RealmAttributes.DISPLAY_NAME, displayName);
+        realm.setDisplayName(displayName);
     }
 
     @Override
@@ -129,7 +174,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEnabled(boolean enabled) {
         realm.setEnabled(enabled);
-        em.flush();
     }
 
     @Override
@@ -140,7 +184,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setSslRequired(SslRequired sslRequired) {
         realm.setSslRequired(sslRequired.name());
-        em.flush();
     }
 
     @Override
@@ -151,7 +194,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setUserManagedAccessAllowed(boolean userManagedAccessAllowed) {
         realm.setAllowUserManagedAccess(userManagedAccessAllowed);
-        em.flush();
     }
 
     @Override
@@ -162,7 +204,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setRegistrationAllowed(boolean registrationAllowed) {
         realm.setRegistrationAllowed(registrationAllowed);
-        em.flush();
     }
 
     @Override
@@ -174,7 +215,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     public void setRegistrationEmailAsUsername(boolean registrationEmailAsUsername) {
         realm.setRegistrationEmailAsUsername(registrationEmailAsUsername);
         if (registrationEmailAsUsername) realm.setDuplicateEmailsAllowed(false);
-        em.flush();
     }
 
     @Override
@@ -185,34 +225,82 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setRememberMe(boolean rememberMe) {
         realm.setRememberMe(rememberMe);
-        em.flush();
     }
 
     @Override
     public void setAttribute(String name, String value) {
+        updateAttribute(name, value);
+    }
+
+    /**
+     * Sets the attribute and publishes a {@link RealmModel.RealmAttributeUpdateEvent} if the value changed.
+     *
+     * @return {@code true} if the value changed and the event was published, {@code false} for a no-op write
+     */
+    private boolean updateAttribute(String name, String value) {
+        RealmAttributeEntity existing = null;
         for (RealmAttributeEntity attr : realm.getAttributes()) {
             if (attr.getName().equals(name)) {
-                attr.setValue(value);
-                return;
+                existing = attr;
+                break;
             }
         }
-        RealmAttributeEntity attr = new RealmAttributeEntity();
-        attr.setName(name);
-        attr.setValue(value);
-        attr.setRealm(realm);
-        em.persist(attr);
-        realm.getAttributes().add(attr);
+        if (existing != null) {
+            if (Objects.equals(existing.getValue(), value)) {
+                return false;
+            }
+            existing.setValue(value);
+        } else {
+            RealmAttributeEntity attr = new RealmAttributeEntity();
+            attr.setName(name);
+            attr.setValue(value);
+            attr.setRealm(realm);
+            em.persist(attr);
+            realm.getAttributes().add(attr);
+        }
+        publishRealmAttributeUpdateEvent(name, value);
+        return true;
+    }
+
+    private void publishRealmAttributeUpdateEvent(String name, String value) {
+        session.getKeycloakSessionFactory().publish(new RealmModel.RealmAttributeUpdateEvent() {
+
+            @Override
+            public RealmModel getRealm() {
+                return RealmAdapter.this;
+            }
+
+            @Override
+            public String getAttributeName() {
+                return name;
+            }
+
+            @Override
+            public String getAttributeValue() {
+                return value;
+            }
+
+            @Override
+            public KeycloakSession getKeycloakSession() {
+                return session;
+            }
+        });
     }
 
     @Override
     public void removeAttribute(String name) {
+        boolean removed = false;
         Iterator<RealmAttributeEntity> it = realm.getAttributes().iterator();
         while (it.hasNext()) {
             RealmAttributeEntity attr = it.next();
             if (attr.getName().equals(name)) {
                 it.remove();
                 em.remove(attr);
+                removed = true;
             }
+        }
+        if (removed) {
+            publishRealmAttributeUpdateEvent(name, null);
         }
     }
 
@@ -229,7 +317,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public Map<String, String> getAttributes() {
         // should always return a copy
-        Map<String, String> result = new HashMap<String, String>();
+        Map<String, String> result = new HashMap<>();
         for (RealmAttributeEntity attr : realm.getAttributes()) {
             result.put(attr.getName(), attr.getValue());
         }
@@ -269,6 +357,20 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public int getMaxTemporaryLockouts() {
         return getAttribute("maxTemporaryLockouts", 0);
+    }
+
+    @Override
+    public RealmRepresentation.BruteForceStrategy getBruteForceStrategy() {
+        String name = getAttribute("bruteForceStrategy");
+        if(name == null)
+            return RealmRepresentation.BruteForceStrategy.MULTIPLE;
+
+        return RealmRepresentation.BruteForceStrategy.valueOf(name);
+    }
+
+    @Override
+    public void setBruteForceStrategy(final RealmRepresentation.BruteForceStrategy val) {
+        setAttribute("bruteForceStrategy", val.toString());
     }
 
     @Override
@@ -337,6 +439,16 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     }
 
     @Override
+    public int getMaxSecondaryAuthFailures() {
+        return getAttribute("maxSecondaryAuthFailures", 0);
+    }
+
+    @Override
+    public void setMaxSecondaryAuthFailures(int maxSecondaryAuthFailures) {
+        setAttribute("maxSecondaryAuthFailures", maxSecondaryAuthFailures);
+    }
+
+    @Override
     public boolean isVerifyEmail() {
         return realm.isVerifyEmail();
     }
@@ -344,7 +456,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setVerifyEmail(boolean verifyEmail) {
         realm.setVerifyEmail(verifyEmail);
-        em.flush();
     }
 
     @Override
@@ -356,7 +467,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     public void setLoginWithEmailAllowed(boolean loginWithEmailAllowed) {
         realm.setLoginWithEmailAllowed(loginWithEmailAllowed);
         if (loginWithEmailAllowed) realm.setDuplicateEmailsAllowed(false);
-        em.flush();
     }
 
     @Override
@@ -371,7 +481,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
             realm.setLoginWithEmailAllowed(false);
             realm.setRegistrationEmailAsUsername(false);
         }
-        em.flush();
     }
 
     @Override
@@ -382,7 +491,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setResetPasswordAllowed(boolean resetPasswordAllowed) {
         realm.setResetPasswordAllowed(resetPasswordAllowed);
-        em.flush();
     }
 
     @Override
@@ -393,7 +501,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEditUsernameAllowed(boolean editUsernameAllowed) {
         realm.setEditUsernameAllowed(editUsernameAllowed);
-        em.flush();
     }
 
     @Override
@@ -434,7 +541,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAccessTokenLifespan(int tokenLifespan) {
         realm.setAccessTokenLifespan(tokenLifespan);
-        em.flush();
     }
 
     @Override
@@ -566,7 +672,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAccessCodeLifespan(int accessCodeLifespan) {
         realm.setAccessCodeLifespan(accessCodeLifespan);
-        em.flush();
     }
 
     @Override
@@ -577,7 +682,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAccessCodeLifespanUserAction(int accessCodeLifespanUserAction) {
         realm.setAccessCodeLifespanUserAction(accessCodeLifespanUserAction);
-        em.flush();
     }
 
     @Override
@@ -587,12 +691,12 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     @Override
     public CibaConfig getCibaPolicy() {
-        return new CibaConfig(this);
+        return CibaConfig.fromModel(this);
     }
 
     @Override
     public ParConfig getParPolicy() {
-        return new ParConfig(this);
+        return ParConfig.fromModel(this);
     }
 
     @Override
@@ -618,7 +722,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAccessCodeLifespanLogin(int accessCodeLifespanLogin) {
         realm.setAccessCodeLifespanLogin(accessCodeLifespanLogin);
-        em.flush();
     }
 
     @Override
@@ -667,7 +770,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     public void addRequiredCredential(String type) {
         RequiredCredentialModel model = initRequiredCredentialModel(type);
         addRequiredCredential(model);
-        em.flush();
     }
 
     public void addRequiredCredential(RequiredCredentialModel model) {
@@ -679,7 +781,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         entity.setFormLabel(model.getFormLabel());
         em.persist(entity);
         realm.getRequiredCredentials().add(entity);
-        em.flush();
     }
 
     @Override
@@ -705,7 +806,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
                 addRequiredCredential(cred);
             }
         }
-        em.flush();
     }
 
 
@@ -725,17 +825,12 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         if (groupsIds.contains(group.getId())) return;
 
         groupsIds.add(group.getId());
-        em.flush();
         GroupUpdatedEvent.fire(group, session);
     }
 
     @Override
     public void removeDefaultGroup(GroupModel group) {
-        Collection<String> groupIds = realm.getDefaultGroupIds();
-
-        if (groupIds.remove(group.getId())) {
-            em.flush();
-        }
+        realm.getDefaultGroupIds().remove(group.getId());
     }
 
     @Override
@@ -828,7 +923,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setSmtpConfig(Map<String, String> smtpConfig) {
         realm.setSmtpConfig(smtpConfig);
-        em.flush();
     }
 
 
@@ -884,7 +978,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     public void setPasswordPolicy(PasswordPolicy policy) {
         this.passwordPolicy = policy;
         realm.setPasswordPolicy(policy.toString());
-        em.flush();
     }
 
     @Override
@@ -911,7 +1004,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         realm.setOtpPolicyType(policy.getType());
         realm.setOtpPolicyPeriod(policy.getPeriod());
         setAttribute(OTPPolicy.REALM_REUSABLE_CODE_ATTRIBUTE, policy.isCodeReusable());
-        em.flush();
     }
 
 
@@ -919,7 +1011,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     @Override
     public WebAuthnPolicy getWebAuthnPolicy() {
-        return getWebAuthnPolicy("");
+        return getWebAuthnPolicy("", WebAuthnPolicyTwoFactorDefaults.get());
     }
 
     @Override
@@ -930,7 +1022,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public WebAuthnPolicy getWebAuthnPolicyPasswordless() {
         // We will use some prefix for attributes related to passwordless WebAuthn policy
-        return getWebAuthnPolicy(Constants.WEBAUTHN_PASSWORDLESS_PREFIX);
+        return getWebAuthnPolicy(Constants.WEBAUTHN_PASSWORDLESS_PREFIX, WebAuthnPolicyPasswordlessDefaults.get());
     }
 
     @Override
@@ -939,65 +1031,93 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         setWebAuthnPolicy(policy, Constants.WEBAUTHN_PASSWORDLESS_PREFIX);
     }
 
-
-    private WebAuthnPolicy getWebAuthnPolicy(String attributePrefix) {
+    private WebAuthnPolicy getWebAuthnPolicy(String attributePrefix, WebAuthnPolicy defaultConfig) {
         WebAuthnPolicy policy = new WebAuthnPolicy();
 
         // mandatory parameters
         String rpEntityName = getAttribute(RealmAttributes.WEBAUTHN_POLICY_RP_ENTITY_NAME + attributePrefix);
         if (rpEntityName == null || rpEntityName.isEmpty())
-            rpEntityName = Constants.DEFAULT_WEBAUTHN_POLICY_RP_ENTITY_NAME;
+            rpEntityName = defaultConfig.getRpEntityName();
         policy.setRpEntityName(rpEntityName);
 
         String signatureAlgorithmsString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_SIGNATURE_ALGORITHMS + attributePrefix);
-        if (signatureAlgorithmsString == null || signatureAlgorithmsString.isEmpty())
-            signatureAlgorithmsString = Constants.DEFAULT_WEBAUTHN_POLICY_SIGNATURE_ALGORITHMS;
-        List<String> signatureAlgorithms = Arrays.asList(signatureAlgorithmsString.split(","));
+        List<String> signatureAlgorithms = (signatureAlgorithmsString == null || signatureAlgorithmsString.isEmpty())
+                ? defaultConfig.getSignatureAlgorithm()
+                : Arrays.asList(signatureAlgorithmsString.split(","));
         policy.setSignatureAlgorithm(signatureAlgorithms);
 
         // optional parameters
         String rpId = getAttribute(RealmAttributes.WEBAUTHN_POLICY_RP_ID + attributePrefix);
-        if (rpId == null || rpId.isEmpty()) rpId = "";
+        if (rpId == null || rpId.isEmpty()) {
+            rpId = defaultConfig.getRpId();
+        }
         policy.setRpId(rpId);
 
         String attestationConveyancePreference = getAttribute(RealmAttributes.WEBAUTHN_POLICY_ATTESTATION_CONVEYANCE_PREFERENCE + attributePrefix);
-        if (attestationConveyancePreference == null || attestationConveyancePreference.isEmpty())
-            attestationConveyancePreference = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+        if (attestationConveyancePreference == null || attestationConveyancePreference.isEmpty()) {
+            attestationConveyancePreference = defaultConfig.getAttestationConveyancePreference();
+        }
         policy.setAttestationConveyancePreference(attestationConveyancePreference);
 
         String authenticatorAttachment = getAttribute(RealmAttributes.WEBAUTHN_POLICY_AUTHENTICATOR_ATTACHMENT + attributePrefix);
-        if (authenticatorAttachment == null || authenticatorAttachment.isEmpty())
-            authenticatorAttachment = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+        if (authenticatorAttachment == null || authenticatorAttachment.isEmpty()) {
+            authenticatorAttachment = defaultConfig.getAuthenticatorAttachment();
+        }
         policy.setAuthenticatorAttachment(authenticatorAttachment);
 
         String requireResidentKey = getAttribute(RealmAttributes.WEBAUTHN_POLICY_REQUIRE_RESIDENT_KEY + attributePrefix);
-        if (requireResidentKey == null || requireResidentKey.isEmpty())
-            requireResidentKey = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+        if (requireResidentKey == null || requireResidentKey.isEmpty()) {
+            requireResidentKey = defaultConfig.getRequireResidentKey();
+        }
         policy.setRequireResidentKey(requireResidentKey);
 
+        String residentKey = getAttribute(RealmAttributes.WEBAUTHN_POLICY_RESIDENT_KEY + attributePrefix);
+        if (residentKey == null || residentKey.isEmpty()) {
+            residentKey = defaultConfig.getResidentKey();
+        }
+        policy.setResidentKey(residentKey);
+
         String userVerificationRequirement = getAttribute(RealmAttributes.WEBAUTHN_POLICY_USER_VERIFICATION_REQUIREMENT + attributePrefix);
-        if (userVerificationRequirement == null || userVerificationRequirement.isEmpty())
-            userVerificationRequirement = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+        if (userVerificationRequirement == null || userVerificationRequirement.isEmpty()) {
+            userVerificationRequirement = defaultConfig.getUserVerificationRequirement();
+        }
         policy.setUserVerificationRequirement(userVerificationRequirement);
 
-        String createTime = getAttribute(RealmAttributes.WEBAUTHN_POLICY_CREATE_TIMEOUT + attributePrefix);
-        if (createTime != null) policy.setCreateTimeout(Integer.parseInt(createTime));
-        else policy.setCreateTimeout(0);
+        String createTimeoutString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_CREATE_TIMEOUT + attributePrefix);
+        int createTimeout = (createTimeoutString != null)
+                ? Integer.parseInt(createTimeoutString)
+                : defaultConfig.getCreateTimeout();
+        policy.setCreateTimeout(createTimeout);
 
-        String avoidSameAuthenticatorRegister = getAttribute(RealmAttributes.WEBAUTHN_POLICY_AVOID_SAME_AUTHENTICATOR_REGISTER + attributePrefix);
-        if (avoidSameAuthenticatorRegister != null) policy.setAvoidSameAuthenticatorRegister(Boolean.parseBoolean(avoidSameAuthenticatorRegister));
+        String avoidSameAuthenticatorRegisterString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_AVOID_SAME_AUTHENTICATOR_REGISTER + attributePrefix);
+        boolean avoidSameAuthenticatorRegister = (avoidSameAuthenticatorRegisterString != null)
+                ? Boolean.parseBoolean(avoidSameAuthenticatorRegisterString)
+                : defaultConfig.isAvoidSameAuthenticatorRegister();
+        policy.setAvoidSameAuthenticatorRegister(avoidSameAuthenticatorRegister);
 
         String acceptableAaguidsString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_ACCEPTABLE_AAGUIDS + attributePrefix);
-        List<String> acceptableAaguids = new ArrayList<>();
-        if (acceptableAaguidsString != null && !acceptableAaguidsString.isEmpty())
-            acceptableAaguids = Arrays.asList(acceptableAaguidsString.split(","));
+        List<String> acceptableAaguids = (acceptableAaguidsString != null && !acceptableAaguidsString.isEmpty())
+                ? Arrays.asList(acceptableAaguidsString.split(","))
+                : defaultConfig.getAcceptableAaguids();
         policy.setAcceptableAaguids(acceptableAaguids);
 
         String extraOriginsString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_EXTRA_ORIGINS + attributePrefix);
-        List<String> extraOrigins = new ArrayList<>();
-        if (extraOriginsString != null && !extraOriginsString.isEmpty())
-            extraOrigins = Arrays.asList(extraOriginsString.split(","));
+        List<String> extraOrigins = (extraOriginsString != null && !extraOriginsString.isEmpty())
+                ? Arrays.asList(extraOriginsString.split(","))
+                : defaultConfig.getExtraOrigins();
         policy.setExtraOrigins(extraOrigins);
+
+        String passkeysEnabledString = getAttribute(RealmAttributes.WEBAUTHN_POLICY_PASSKEYS_ENABLED + attributePrefix);
+        Boolean passKeysEnabled = (passkeysEnabledString != null)
+                ? Boolean.valueOf(passkeysEnabledString)
+                : defaultConfig.isPasskeysEnabled();
+        policy.setPasskeysEnabled(passKeysEnabled);
+
+        String mediation = getAttribute(RealmAttributes.WEBAUTHN_POLICY_MEDIATION + attributePrefix);
+        if (mediation == null || mediation.isEmpty()) {
+            mediation = defaultConfig.getMediation();
+        }
+        policy.setMediation(mediation);
 
         return policy;
     }
@@ -1022,6 +1142,9 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
         String authenticatorAttachment = policy.getAuthenticatorAttachment();
         setAttribute(RealmAttributes.WEBAUTHN_POLICY_AUTHENTICATOR_ATTACHMENT + attributePrefix, authenticatorAttachment);
+
+        String residentKey = policy.getResidentKey();
+        setAttribute(RealmAttributes.WEBAUTHN_POLICY_RESIDENT_KEY + attributePrefix, residentKey);
 
         String requireResidentKey = policy.getRequireResidentKey();
         setAttribute(RealmAttributes.WEBAUTHN_POLICY_REQUIRE_RESIDENT_KEY + attributePrefix, requireResidentKey);
@@ -1050,6 +1173,20 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         } else {
             removeAttribute(RealmAttributes.WEBAUTHN_POLICY_EXTRA_ORIGINS + attributePrefix);
         }
+
+        Boolean passkeysEnabled = policy.isPasskeysEnabled();
+        if (passkeysEnabled != null) {
+            setAttribute(RealmAttributes.WEBAUTHN_POLICY_PASSKEYS_ENABLED + attributePrefix, passkeysEnabled.toString());
+        } else {
+            removeAttribute(RealmAttributes.WEBAUTHN_POLICY_PASSKEYS_ENABLED + attributePrefix);
+        }
+
+        String mediation = policy.getMediation();
+        if (mediation != null && !mediation.isBlank()) {
+            setAttribute(RealmAttributes.WEBAUTHN_POLICY_MEDIATION + attributePrefix, mediation);
+        } else {
+            removeAttribute(RealmAttributes.WEBAUTHN_POLICY_MEDIATION + attributePrefix);
+        }
     }
 
     @Override
@@ -1074,7 +1211,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setLoginTheme(String name) {
         realm.setLoginTheme(name);
-        em.flush();
     }
 
     @Override
@@ -1085,7 +1221,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAccountTheme(String name) {
         realm.setAccountTheme(name);
-        em.flush();
     }
 
     @Override
@@ -1096,7 +1231,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAdminTheme(String name) {
         realm.setAdminTheme(name);
-        em.flush();
     }
 
     @Override
@@ -1107,7 +1241,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEmailTheme(String name) {
         realm.setEmailTheme(name);
-        em.flush();
     }
 
     @Override
@@ -1118,7 +1251,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEventsEnabled(boolean enabled) {
         realm.setEventsEnabled(enabled);
-        em.flush();
     }
 
     @Override
@@ -1129,7 +1261,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEventsExpiration(long expiration) {
         realm.setEventsExpiration(expiration);
-        em.flush();
     }
 
     @Override
@@ -1140,7 +1271,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEventsListeners(Set<String> listeners) {
         realm.setEventsListeners(listeners);
-        em.flush();
     }
 
     @Override
@@ -1151,7 +1281,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setEnabledEventTypes(Set<String> enabledEventTypes) {
         realm.setEnabledEventTypes(enabledEventTypes);
-        em.flush();
     }
 
     @Override
@@ -1162,7 +1291,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAdminEventsEnabled(boolean enabled) {
         realm.setAdminEventsEnabled(enabled);
-        em.flush();
     }
 
     @Override
@@ -1173,7 +1301,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setAdminEventsDetailsEnabled(boolean enabled) {
         realm.setAdminEventsDetailsEnabled(enabled);
-        em.flush();
     }
 
     @Override
@@ -1184,6 +1311,43 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setOrganizationsEnabled(boolean organizationsEnabled) {
         setAttribute(RealmAttributes.ORGANIZATIONS_ENABLED, organizationsEnabled);
+    }
+
+    @Override
+    public boolean isAdminPermissionsEnabled() {
+        return getAttribute(RealmAttributes.ADMIN_PERMISSIONS_ENABLED, Boolean.FALSE);
+    }
+
+    @Override
+    public void setAdminPermissionsEnabled(boolean adminPermissionsEnabled) {
+        boolean published = updateAttribute(RealmAttributes.ADMIN_PERMISSIONS_ENABLED, String.valueOf(adminPermissionsEnabled));
+
+        // updateAttribute already published the update if the value changed. This explicit publish
+        // covers only the repair case where the attribute was already "true" but the admin
+        // permissions client is missing, keeping one event per change.
+        if (!published && adminPermissionsEnabled && getAdminPermissionsClient() == null) {
+            publishRealmAttributeUpdateEvent(RealmAttributes.ADMIN_PERMISSIONS_ENABLED, String.valueOf(adminPermissionsEnabled));
+        }
+    }
+
+    @Override
+    public boolean isVerifiableCredentialsEnabled() {
+        return getAttribute(RealmAttributes.VERIFIABLE_CREDENTIALS_ENABLED, Boolean.FALSE);
+    }
+
+    @Override
+    public void setVerifiableCredentialsEnabled(boolean verifiableCredentialsEnabled) {
+        setAttribute(RealmAttributes.VERIFIABLE_CREDENTIALS_ENABLED, verifiableCredentialsEnabled);
+    }
+
+    @Override
+    public void setScimApiEnabled(boolean enabled) {
+        setAttribute(RealmAttributes.SCIM_API_ENABLED, enabled);
+    }
+
+    @Override
+    public boolean isScimApiEnabled() {
+        return getAttribute(RealmAttributes.SCIM_API_ENABLED, Boolean.FALSE);
     }
 
     @Override
@@ -1202,7 +1366,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     public void setMasterAdminClient(ClientModel client) {
         String appEntityId = client !=null ? em.getReference(ClientEntity.class, client.getId()).getId() : null;
         realm.setMasterAdminClient(appEntityId);
-        em.flush();
     }
 
     @Override
@@ -1219,158 +1382,46 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     }
 
     @Override
-    public Stream<IdentityProviderModel> getIdentityProvidersStream() {
-        return realm.getIdentityProviders().stream().map(this::entityToModel);
+    public void setAdminPermissionsClient(ClientModel client) {
+        setAttribute(RealmAttributes.ADMIN_PERMISSIONS_CLIENT_ID, client.getId());
     }
 
-    private IdentityProviderModel entityToModel(IdentityProviderEntity entity) {
-        IdentityProviderModel identityProviderModel = getModelFromProviderFactory(entity.getProviderId());
-        identityProviderModel.setProviderId(entity.getProviderId());
-        identityProviderModel.setAlias(entity.getAlias());
-        identityProviderModel.setDisplayName(entity.getDisplayName());
-
-        identityProviderModel.setInternalId(entity.getInternalId());
-        Map<String, String> config = entity.getConfig();
-        Map<String, String> copy = new HashMap<>();
-        copy.putAll(config);
-        identityProviderModel.setConfig(copy);
-        identityProviderModel.setEnabled(entity.isEnabled());
-        identityProviderModel.setLinkOnly(entity.isLinkOnly());
-        identityProviderModel.setTrustEmail(entity.isTrustEmail());
-        identityProviderModel.setAuthenticateByDefault(entity.isAuthenticateByDefault());
-        identityProviderModel.setFirstBrokerLoginFlowId(entity.getFirstBrokerLoginFlowId());
-        identityProviderModel.setPostBrokerLoginFlowId(entity.getPostBrokerLoginFlowId());
-        identityProviderModel.setStoreToken(entity.isStoreToken());
-        identityProviderModel.setAddReadTokenRoleOnCreate(entity.isAddReadTokenRoleOnCreate());
-        return identityProviderModel;
-    }
-
-    private IdentityProviderModel getModelFromProviderFactory(String providerId) {
-        Optional<IdentityProviderFactory> factory = Stream.concat(session.getKeycloakSessionFactory().getProviderFactoriesStream(IdentityProvider.class),
-                                                                  session.getKeycloakSessionFactory().getProviderFactoriesStream(SocialIdentityProvider.class))
-                                                          .filter(providerFactory -> Objects.equals(providerFactory.getId(), providerId))
-                                                          .map(IdentityProviderFactory.class::cast)
-                                                          .findFirst();
-
-        if (factory.isPresent()) {
-            return factory.get().createConfig();
-        } else {
-            logger.warn("Couldn't find a suitable identity provider factory for " + providerId);
-            return new IdentityProviderModel();
+    @Override
+    public ClientModel getAdminPermissionsClient() {
+        if (getAttribute(RealmAttributes.ADMIN_PERMISSIONS_CLIENT_ID) == null) {
+            return null;
         }
+        return session.clients().getClientById(this, getAttribute(RealmAttributes.ADMIN_PERMISSIONS_CLIENT_ID));
+    }
+
+    @Override
+    public Stream<IdentityProviderModel> getIdentityProvidersStream() {
+        return session.identityProviders().getAllStream(IdentityProviderQuery.userAuthentication());
     }
 
     @Override
     public IdentityProviderModel getIdentityProviderByAlias(String alias) {
-        return getIdentityProvidersStream()
-                .filter(model -> Objects.equals(model.getAlias(), alias))
-                .findFirst()
-                .orElse(null);
+        return session.identityProviders().getByAlias(alias);
     }
 
     @Override
     public void addIdentityProvider(IdentityProviderModel identityProvider) {
-        IdentityProviderEntity entity = new IdentityProviderEntity();
-
-        if (identityProvider.getInternalId() == null) {
-            entity.setInternalId(KeycloakModelUtils.generateId());
-        } else {
-            entity.setInternalId(identityProvider.getInternalId());
-        }
-        entity.setAlias(identityProvider.getAlias());
-        entity.setDisplayName(identityProvider.getDisplayName());
-        entity.setProviderId(identityProvider.getProviderId());
-        entity.setEnabled(identityProvider.isEnabled());
-        entity.setStoreToken(identityProvider.isStoreToken());
-        entity.setAddReadTokenRoleOnCreate(identityProvider.isAddReadTokenRoleOnCreate());
-        entity.setTrustEmail(identityProvider.isTrustEmail());
-        entity.setAuthenticateByDefault(identityProvider.isAuthenticateByDefault());
-        entity.setFirstBrokerLoginFlowId(identityProvider.getFirstBrokerLoginFlowId());
-        entity.setPostBrokerLoginFlowId(identityProvider.getPostBrokerLoginFlowId());
-        entity.setConfig(identityProvider.getConfig());
-        entity.setLinkOnly(identityProvider.isLinkOnly());
-
-        realm.addIdentityProvider(entity);
-
-        identityProvider.setInternalId(entity.getInternalId());
-
-        em.persist(entity);
-        em.flush();
+        session.identityProviders().create(identityProvider);
     }
 
     @Override
     public void removeIdentityProviderByAlias(String alias) {
-        for (IdentityProviderEntity entity : realm.getIdentityProviders()) {
-            if (entity.getAlias().equals(alias)) {
-
-                IdentityProviderModel model = entityToModel(entity);
-                em.remove(entity);
-                em.flush();
-
-                session.getKeycloakSessionFactory().publish(new RealmModel.IdentityProviderRemovedEvent() {
-
-                    @Override
-                    public RealmModel getRealm() {
-                        return RealmAdapter.this;
-                    }
-
-                    @Override
-                    public IdentityProviderModel getRemovedIdentityProvider() {
-                        return model;
-                    }
-
-                    @Override
-                    public KeycloakSession getKeycloakSession() {
-                        return session;
-                    }
-                });
-
-            }
-        }
+        session.identityProviders().remove(alias);
     }
 
     @Override
     public void updateIdentityProvider(IdentityProviderModel identityProvider) {
-        for (IdentityProviderEntity entity : this.realm.getIdentityProviders()) {
-            if (entity.getInternalId().equals(identityProvider.getInternalId())) {
-                entity.setAlias(identityProvider.getAlias());
-                entity.setDisplayName(identityProvider.getDisplayName());
-                entity.setEnabled(identityProvider.isEnabled());
-                entity.setTrustEmail(identityProvider.isTrustEmail());
-                entity.setAuthenticateByDefault(identityProvider.isAuthenticateByDefault());
-                entity.setFirstBrokerLoginFlowId(identityProvider.getFirstBrokerLoginFlowId());
-                entity.setPostBrokerLoginFlowId(identityProvider.getPostBrokerLoginFlowId());
-                entity.setAddReadTokenRoleOnCreate(identityProvider.isAddReadTokenRoleOnCreate());
-                entity.setStoreToken(identityProvider.isStoreToken());
-                entity.setConfig(identityProvider.getConfig());
-                entity.setLinkOnly(identityProvider.isLinkOnly());
-            }
-        }
-
-        em.flush();
-
-        session.getKeycloakSessionFactory().publish(new RealmModel.IdentityProviderUpdatedEvent() {
-
-            @Override
-            public RealmModel getRealm() {
-                return RealmAdapter.this;
-            }
-
-            @Override
-            public IdentityProviderModel getUpdatedIdentityProvider() {
-                return identityProvider;
-            }
-
-            @Override
-            public KeycloakSession getKeycloakSession() {
-                return session;
-            }
-        });
+        session.identityProviders().update(identityProvider);
     }
 
     @Override
     public boolean isIdentityFederationEnabled() {
-        return !this.realm.getIdentityProviders().isEmpty();
+        return session.identityProviders().isIdentityFederationEnabled();
     }
 
     @Override
@@ -1381,7 +1432,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setInternationalizationEnabled(boolean enabled) {
         realm.setInternationalizationEnabled(enabled);
-        em.flush();
     }
 
     @Override
@@ -1392,7 +1442,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setSupportedLocales(Set<String> locales) {
         realm.setSupportedLocales(locales);
-        em.flush();
     }
 
     @Override
@@ -1403,111 +1452,41 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
     @Override
     public void setDefaultLocale(String locale) {
         realm.setDefaultLocale(locale);
-        em.flush();
     }
 
     @Override
     public Stream<IdentityProviderMapperModel> getIdentityProviderMappersStream() {
-        return realm.getIdentityProviderMappers().stream().map(this::entityToModel);
+        return session.identityProviders().getMappersStream();
     }
 
     @Override
     public Stream<IdentityProviderMapperModel> getIdentityProviderMappersByAliasStream(String brokerAlias) {
-        return realm.getIdentityProviderMappers().stream()
-                .filter(e -> Objects.equals(e.getIdentityProviderAlias(), brokerAlias))
-                .map(this::entityToModel);
+        return session.identityProviders().getMappersByAliasStream(brokerAlias);
     }
 
     @Override
     public IdentityProviderMapperModel addIdentityProviderMapper(IdentityProviderMapperModel model) {
-        if (getIdentityProviderMapperByName(model.getIdentityProviderAlias(), model.getName()) != null) {
-            throw new RuntimeException("identity provider mapper name must be unique per identity provider");
-        }
-        String id = KeycloakModelUtils.generateId();
-        IdentityProviderMapperEntity entity = new IdentityProviderMapperEntity();
-        entity.setId(id);
-        entity.setName(model.getName());
-        entity.setIdentityProviderAlias(model.getIdentityProviderAlias());
-        entity.setIdentityProviderMapper(model.getIdentityProviderMapper());
-        entity.setRealm(this.realm);
-        entity.setConfig(model.getConfig());
-
-        em.persist(entity);
-        this.realm.getIdentityProviderMappers().add(entity);
-        return entityToModel(entity);
-    }
-
-    protected IdentityProviderMapperEntity getIdentityProviderMapperEntity(String id) {
-        for (IdentityProviderMapperEntity entity : this.realm.getIdentityProviderMappers()) {
-            if (entity.getId().equals(id)) {
-                return entity;
-            }
-        }
-        return null;
-
-    }
-
-    protected IdentityProviderMapperEntity getIdentityProviderMapperEntityByName(String alias, String name) {
-        for (IdentityProviderMapperEntity entity : this.realm.getIdentityProviderMappers()) {
-            if (entity.getIdentityProviderAlias().equals(alias) && entity.getName().equals(name)) {
-                return entity;
-            }
-        }
-        return null;
-
+        return session.identityProviders().createMapper(model);
     }
 
     @Override
     public void removeIdentityProviderMapper(IdentityProviderMapperModel mapping) {
-        IdentityProviderMapperEntity toDelete = getIdentityProviderMapperEntity(mapping.getId());
-        if (toDelete != null) {
-            this.realm.getIdentityProviderMappers().remove(toDelete);
-            em.remove(toDelete);
-        }
-
+        session.identityProviders().removeMapper(mapping);
     }
 
     @Override
     public void updateIdentityProviderMapper(IdentityProviderMapperModel mapping) {
-        IdentityProviderMapperEntity entity = getIdentityProviderMapperEntity(mapping.getId());
-        entity.setIdentityProviderAlias(mapping.getIdentityProviderAlias());
-        entity.setIdentityProviderMapper(mapping.getIdentityProviderMapper());
-        if (entity.getConfig() == null) {
-            entity.setConfig(mapping.getConfig());
-        } else {
-            entity.getConfig().clear();
-            if (mapping.getConfig() != null) {
-                entity.getConfig().putAll(mapping.getConfig());
-            }
-        }
-        em.flush();
-
+        session.identityProviders().updateMapper(mapping);
     }
 
     @Override
     public IdentityProviderMapperModel getIdentityProviderMapperById(String id) {
-        IdentityProviderMapperEntity entity = getIdentityProviderMapperEntity(id);
-        if (entity == null) return null;
-        return entityToModel(entity);
+        return session.identityProviders().getMapperById(id);
     }
 
     @Override
     public IdentityProviderMapperModel getIdentityProviderMapperByName(String alias, String name) {
-        IdentityProviderMapperEntity entity = getIdentityProviderMapperEntityByName(alias, name);
-        if (entity == null) return null;
-        return entityToModel(entity);
-    }
-
-    protected IdentityProviderMapperModel entityToModel(IdentityProviderMapperEntity entity) {
-        IdentityProviderMapperModel mapping = new IdentityProviderMapperModel();
-        mapping.setId(entity.getId());
-        mapping.setName(entity.getName());
-        mapping.setIdentityProviderAlias(entity.getIdentityProviderAlias());
-        mapping.setIdentityProviderMapper(entity.getIdentityProviderMapper());
-        Map<String, String> config = new HashMap<String, String>();
-        if (entity.getConfig() != null) config.putAll(entity.getConfig());
-        mapping.setConfig(config);
-        return mapping;
+        return session.identityProviders().getMapperByName(alias, name);
     }
 
     @Override
@@ -1561,12 +1540,14 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         realm.setResetCredentialsFlow(flow.getId());
     }
 
+    @Override
     public AuthenticationFlowModel getClientAuthenticationFlow() {
         String flowId = realm.getClientAuthenticationFlow();
         if (flowId == null) return null;
         return getAuthenticationFlowById(flowId);
     }
 
+    @Override
     public void setClientAuthenticationFlow(AuthenticationFlowModel flow) {
         realm.setClientAuthenticationFlow(flow.getId());
     }
@@ -1637,12 +1618,13 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     @Override
     public void removeAuthenticationFlow(AuthenticationFlowModel model) {
-        if (KeycloakModelUtils.isFlowUsed(this, model)) {
+        if (KeycloakModelUtils.isFlowUsed(session,this, model)) {
             throw new ModelException("Cannot remove authentication flow, it is currently in use");
         }
         AuthenticationFlowEntity entity = getAuthenticationFlowEntity(model.getId(), true);
         if (entity == null) return;
         em.remove(entity);
+        // Flush so that the removed entity is no longer returned by the lazily loaded collections of the realm entity
         em.flush();
     }
 
@@ -1714,6 +1696,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         return entityToModel(entity);
     }
 
+    @Override
     public AuthenticationExecutionModel getAuthenticationExecutionByFlowId(String flowId) {
         TypedQuery<AuthenticationExecutionEntity> query = em.createNamedQuery("authenticationFlowExecution", AuthenticationExecutionEntity.class)
                 .setParameter("flowId", flowId);
@@ -1735,6 +1718,9 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         entity.setRequirement(model.getRequirement());
         entity.setAuthenticatorConfig(model.getAuthenticatorConfig());
         AuthenticationFlowEntity flow = em.find(AuthenticationFlowEntity.class, model.getParentFlow());
+        if (flow == null) {
+            throw new ModelException("Parent flow " + model.getParentFlow() + " does not exist");
+        }
         entity.setParentFlow(flow);
         flow.getExecutions().add(entity);
         entity.setRealm(realm);
@@ -1757,9 +1743,18 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         entity.setFlowId(model.getFlowId());
         if (model.getParentFlow() != null) {
             AuthenticationFlowEntity flow = em.find(AuthenticationFlowEntity.class, model.getParentFlow());
+            AuthenticationFlowEntity oldFlow = entity.getParentFlow();
             entity.setParentFlow(flow);
+            if (oldFlow != flow) {
+                // Reading a lazy collection doesn't flush, and removing the execution from the old collection would orphan-delete it.
+                // Instead, flush the changed parent and reload the collections.
+                em.flush();
+                if (oldFlow != null) {
+                    em.refresh(oldFlow);
+                }
+                em.refresh(flow);
+            }
         }
-        em.flush();
     }
 
     @Override
@@ -1767,6 +1762,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         AuthenticationExecutionEntity entity = getAuthenticationExecution(model.getId(), true);
         if (entity == null) return;
         em.remove(entity);
+        // Flush so that the removed entity is no longer returned by the lazily loaded collections of the realm entity
         em.flush();
 
     }
@@ -1799,6 +1795,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         AuthenticatorConfigEntity entity = getAuthenticatorConfigEntity(model.getId(), true);
         if (entity == null) return;
         em.remove(entity);
+        // Flush so that the removed entity is no longer returned by the lazily loaded collections of the realm entity
         em.flush();
 
     }
@@ -1833,7 +1830,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
                 entity.getConfig().putAll(model.getConfig());
             }
         }
-        em.flush();
 
     }
 
@@ -1946,7 +1942,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         action.setPriority(model.getPriority());
         realm.getRequiredActionProviders().add(action);
         em.persist(action);
-        em.flush();
         model.setId(action.getId());
         return model;
     }
@@ -1956,6 +1951,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         RequiredActionProviderEntity entity = getRequiredProviderEntity(model.getId(), true);
         if (entity == null) return;
         em.remove(entity);
+        // Flush so that the removed entity is no longer returned by the lazily loaded collections of the realm entity
         em.flush();
 
     }
@@ -2002,7 +1998,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
                 entity.getConfig().putAll(model.getConfig());
             }
         }
-        em.flush();
 
     }
 
@@ -2107,6 +2102,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         entity.setRealm(getEntity());
         entity.setDefaultScope(defaultScope);
         em.persist(entity);
+        // Flush and detach, as removeDefaultClientScope uses a bulk delete that would leave a managed entity stale
         em.flush();
         em.detach(entity);
     }
@@ -2117,6 +2113,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
                 .setParameter("clientScopeId", clientScope.getId())
                 .setParameter("realm", getEntity())
                 .executeUpdate();
+        // The bulk delete bypasses the persistence context, flush to keep it consistent
         em.flush();
     }
 
@@ -2138,7 +2135,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     /**
      * This just exists for testing purposes
-     * 
+     *
      */
     public static final String COMPONENT_PROVIDER_EXISTS_DISABLED = "component.provider.exists.disabled";
 
@@ -2376,7 +2373,7 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
 
     @Override
     public ClientInitialAccessModel getClientInitialAccessModel(String id) {
-        ClientInitialAccessEntity entity = em.find(ClientInitialAccessEntity.class, id);
+        ClientInitialAccessEntity entity = em.find(ClientInitialAccessEntity.class, id, LockModeType.PESSIMISTIC_WRITE);
         if (entity == null) return null;
         if (!entity.getRealm().getId().equals(realm.getId())) return null;
         return entityToModel(entity);
@@ -2388,7 +2385,6 @@ public class RealmAdapter implements StorageProviderRealmModel, JpaModel<RealmEn
         if (entity == null) return;
         if (!entity.getRealm().getId().equals(realm.getId())) return;
         em.remove(entity);
-        em.flush();
     }
 
     @Override

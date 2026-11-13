@@ -4,7 +4,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../components/form/FormAccess";
 import { ViewHeader } from "../components/view-header/ViewHeader";
 import { useRealm } from "../context/realm-context/RealmContext";
@@ -22,7 +22,7 @@ export default function NewOrganization() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { realm } = useRealm();
-  const form = useForm();
+  const form = useForm({ mode: "onChange" });
   const { handleSubmit, formState } = form;
 
   const save = async (org: OrganizationFormType) => {
@@ -30,7 +30,7 @@ export default function NewOrganization() {
       const organization = convertToOrg(org);
       const { id } = await adminClient.organizations.create(organization);
       addAlert(t("organizationSaveSuccess"));
-      navigate(toEditOrganization({ realm, id, tab: "settings" }));
+      void navigate(toEditOrganization({ realm, id, tab: "settings" }));
     } catch (error) {
       addError("organizationSaveError", error);
     }
@@ -42,9 +42,13 @@ export default function NewOrganization() {
       <PageSection variant="light">
         <FormAccess role="anyone" onSubmit={handleSubmit(save)} isHorizontal>
           <FormProvider {...form}>
-            <OrganizationForm />
+            <OrganizationForm showDomains />
             <ActionGroup>
-              <FormSubmitButton formState={formState} data-testid="save">
+              <FormSubmitButton
+                formState={formState}
+                allowNonDirty
+                data-testid="save"
+              >
                 {t("save")}
               </FormSubmitButton>
               <Button

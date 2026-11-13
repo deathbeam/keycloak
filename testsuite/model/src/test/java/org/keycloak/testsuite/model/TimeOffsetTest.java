@@ -16,7 +16,6 @@
  */
 package org.keycloak.testsuite.model;
 
-import org.junit.Test;
 import org.keycloak.common.util.Time;
 import org.keycloak.events.Event;
 import org.keycloak.events.EventStoreProvider;
@@ -25,6 +24,8 @@ import org.keycloak.models.Constants;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.provider.ProviderFactory;
+
+import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
 
@@ -36,6 +37,7 @@ public class TimeOffsetTest extends KeycloakModelTest {
     @Override
     protected void createEnvironment(KeycloakSession s) {
         RealmModel r = s.realms().createRealm("realm");
+        s.getContext().setRealm(r);
         r.setDefaultRole(s.roles().addRealmRole(r, Constants.DEFAULT_ROLES_ROLE_PREFIX + "-" + r.getName()));
         r.setEventsExpiration(5);
         realmId = r.getId();
@@ -43,6 +45,8 @@ public class TimeOffsetTest extends KeycloakModelTest {
 
     @Override
     protected void cleanEnvironment(KeycloakSession s) {
+        RealmModel r = s.realms().getRealm(realmId);
+        s.getContext().setRealm(r);
         s.realms().removeRealm(realmId);
     }
 

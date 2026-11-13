@@ -18,30 +18,35 @@
 package org.keycloak.testsuite.organization.account;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.SortedSet;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import jakarta.ws.rs.core.Response.Status;
+
+import org.keycloak.admin.client.resource.OrganizationResource;
+import org.keycloak.http.simple.SimpleHttpResponse;
+import org.keycloak.representations.account.LinkedAccountRepresentation;
+import org.keycloak.representations.account.OrganizationRepresentation;
+import org.keycloak.representations.idm.ErrorRepresentation;
+import org.keycloak.representations.idm.OrganizationDomainRepresentation;
+import org.keycloak.representations.idm.OrganizationIdentityProviderLinkRepresentation;
+import org.keycloak.representations.idm.UserRepresentation;
+import org.keycloak.testframework.realm.UserBuilder;
+import org.keycloak.testsuite.admin.AdminApiUtil;
+import org.keycloak.testsuite.broker.util.SimpleHttpDefault;
+import org.keycloak.testsuite.organization.admin.AbstractOrganizationTest;
+import org.keycloak.testsuite.updaters.RealmAttributeUpdater;
+import org.keycloak.testsuite.util.TokenUtil;
+
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.junit.After;
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
-import org.keycloak.admin.client.resource.OrganizationResource;
-import org.keycloak.broker.provider.util.SimpleHttp.Response;
-import org.keycloak.common.Profile.Feature;
-import org.keycloak.representations.account.LinkedAccountRepresentation;
-import org.keycloak.representations.idm.ErrorRepresentation;
-import org.keycloak.representations.idm.UserRepresentation;
-import org.keycloak.testsuite.admin.ApiUtil;
-import org.keycloak.testsuite.arquillian.annotation.EnableFeature;
-import org.keycloak.testsuite.broker.util.SimpleHttpDefault;
-import org.keycloak.testsuite.organization.admin.AbstractOrganizationTest;
-import org.keycloak.testsuite.util.TokenUtil;
+import org.junit.jupiter.api.Assertions;
 
-@EnableFeature(Feature.ORGANIZATION)
 public class OrganizationAccountTest extends AbstractOrganizationTest {
 
     @Rule
@@ -66,24 +71,77 @@ public class OrganizationAccountTest extends AbstractOrganizationTest {
     @Test
     public void testFailUnlinkIdentityProvider() throws IOException {
         // federate user
-        OrganizationResource organization = testRealm().organizations().get(createOrganization().getId());
-        assertBrokerRegistration(organization, bc.getUserEmail());
+        OrganizationResource organization = managedRealm.admin().organizations().get(createOrganization().getId());
+
+        OrganizationIdentityProviderLinkRepresentation idpLink = new OrganizationIdentityProviderLinkRepresentation();
+        idpLink.setAutoMembership(true);
+        idpLink.setMembershipType("MANAGED");
+        organization.identityProviders().get(bc.getIDPAlias()).update(idpLink).close();
+
+        assertBrokerRegistration(organization, bc.getUserLogin(), bc.getUserEmail());
         // reset password to obtain a token and access the account api
-        UserRepresentation user = testRealm().users().searchByEmail(bc.getUserEmail(), true).get(0);
-        ApiUtil.resetUserPassword(realmsResouce().realm(bc.consumerRealmName()).users().get(user.getId()), bc.getUserPassword(), false);
+        UserRepresentation user = managedRealm.admin().users().searchByEmail(bc.getUserEmail(), true).get(0);
+        AdminApiUtil.resetUserPassword(realmsResouce().realm(bc.consumerRealmName()).users().get(user.getId()), bc.getUserPassword(), false);
 
         LinkedAccountRepresentation link = findLinkedAccount(bc.getIDPAlias());
-        Assert.assertNotNull(link);
-        try (Response response = SimpleHttpDefault.doDelete(getAccountUrl("linked-accounts/" + link.getProviderAlias()), client).auth(tokenUtil.getToken()).acceptJson().asResponse()) {
-            Assert.assertEquals(Status.BAD_REQUEST.getStatusCode(), response.getStatus());
+        Assertions.assertNotNull(link);
+        try (SimpleHttpResponse response = SimpleHttpDefault.doDelete(getAccountUrl("linked-accounts/" + link.getProviderAlias()), client).auth(tokenUtil.getToken()).acceptJson().asResponse()) {
+            Assertions.assertEquals(Status.BAD_REQUEST.getStatusCode(), response.getStatus());
             ErrorRepresentation error = response.asJson(ErrorRepresentation.class);
-            Assert.assertEquals("You cannot remove the link to an identity provider associated with an organization.", error.getErrorMessage());
+            Assertions.assertEquals("You cannot remove the link to an identity provider associated with an organization.", error.getErrorMessage());
         }
 
         // broker no longer linked to the organization
         organization.identityProviders().get(bc.getIDPAlias()).delete().close();
-        try (Response response = SimpleHttpDefault.doDelete(getAccountUrl("linked-accounts/" + link.getProviderAlias()), client).auth(tokenUtil.getToken()).acceptJson().asResponse()) {
-            Assert.assertEquals(Status.NO_CONTENT.getStatusCode(), response.getStatus());
+        try (SimpleHttpResponse response = SimpleHttpDefault.doDelete(getAccountUrl("linked-accounts/" + link.getProviderAlias()), client).auth(tokenUtil.getToken()).acceptJson().asResponse()) {
+            Assertions.assertEquals(Status.NO_CONTENT.getStatusCode(), response.getStatus());
+        }
+    }
+
+    @Test
+    public void testGetOrganizations() throws Exception {
+        UserRepresentation member = createUser();
+        org.keycloak.representations.idm.OrganizationRepresentation orgA = createOrganization("orga");
+        managedRealm.admin().organizations().get(orgA.getId()).members().addMember(member.getId()).close();
+        org.keycloak.representations.idm.OrganizationRepresentation orgB = createOrganization("orgb");
+        managedRealm.admin().organizations().get(orgB.getId()).members().addMember(member.getId()).close();
+
+        List<OrganizationRepresentation> organizations = getOrganizations();
+        Assertions.assertEquals(2, organizations.size());
+        OrganizationRepresentation organization = organizations.stream()
+                .filter(o -> orgA.getId().equals(o.getId()))
+                .findAny()
+                .orElse(null);
+        Assertions.assertNotNull(organization);
+        Assertions.assertEquals(orgA.getId(), organization.getId());
+        Assertions.assertEquals(orgA.getAlias(), organization.getAlias());
+        Assertions.assertEquals(orgA.getName(), organization.getName());
+        Assertions.assertEquals(orgA.getDescription(), organization.getDescription());
+        Assertions.assertEquals(orgA.getDomains().size(), organization.getDomains().size());
+        Assertions.assertTrue(organization.getDomains().containsAll(orgA.getDomains().stream().map(OrganizationDomainRepresentation::getName).toList()));
+    }
+
+    @Test
+    public void testGetOrganizationsWhenOrganizationsDisabled() throws Exception {
+        UserRepresentation member = createUser();
+        org.keycloak.representations.idm.OrganizationRepresentation orgA = createOrganization("orga");
+        managedRealm.admin().organizations().get(orgA.getId()).members().addMember(member.getId()).close();
+
+        // verify account API returns organization data when organizations are enabled
+        List<OrganizationRepresentation> organizations = getOrganizations();
+        Assertions.assertEquals(1, organizations.size());
+        Assertions.assertEquals(orgA.getId(), organizations.get(0).getId());
+
+        // disable organizations on the realm
+        try (RealmAttributeUpdater rau = new RealmAttributeUpdater(managedRealm.admin())
+                .setOrganizationsEnabled(Boolean.FALSE)
+                .update()) {
+
+            // account API should not return organization data when organizations are disabled
+            try (SimpleHttpResponse response = SimpleHttpDefault.doGet(getAccountUrl("organizations"), client)
+                    .auth(tokenUtil.getToken()).acceptJson().asResponse()) {
+                Assertions.assertEquals(Status.NOT_FOUND.getStatusCode(), response.getStatus());
+            }
         }
     }
 
@@ -102,5 +160,22 @@ public class OrganizationAccountTest extends AbstractOrganizationTest {
         }
 
         return null;
+    }
+
+    private List<OrganizationRepresentation> getOrganizations() throws IOException {
+        return SimpleHttpDefault.doGet(getAccountUrl("organizations"), client).auth(tokenUtil.getToken())
+                .asJson(new TypeReference<>() {});
+    }
+
+    private UserRepresentation createUser() {
+        managedRealm.admin().users().create(UserBuilder.create()
+                .username(bc.getUserEmail())
+                .email(bc.getUserEmail())
+                .password(bc.getUserPassword())
+                .enabled(true)
+                .build()).close();
+        UserRepresentation member = managedRealm.admin().users().searchByEmail(bc.getUserEmail(), true).get(0);
+        getCleanup().addUserId(member.getId());
+        return member;
     }
 }

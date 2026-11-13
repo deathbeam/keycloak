@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.DefaultValue;
 import jakarta.ws.rs.GET;
@@ -12,31 +13,37 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
 import jakarta.ws.rs.core.MediaType;
-import org.eclipse.microprofile.openapi.annotations.Operation;
-import org.eclipse.microprofile.openapi.annotations.enums.SchemaType;
-import org.eclipse.microprofile.openapi.annotations.media.Content;
-import org.eclipse.microprofile.openapi.annotations.media.Schema;
-import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
-import org.eclipse.microprofile.openapi.annotations.tags.Tag;
-import org.jboss.resteasy.reactive.NoCache;
+
 import org.keycloak.admin.ui.rest.model.Authentication;
 import org.keycloak.admin.ui.rest.model.AuthenticationMapper;
 import org.keycloak.admin.ui.rest.model.ConfigurableRequiredActionProviderRepresentation;
+import org.keycloak.admin.ui.rest.model.UsedByReference;
 import org.keycloak.authentication.RequiredActionFactory;
 import org.keycloak.authentication.RequiredActionProvider;
 import org.keycloak.models.AuthenticationFlowModel;
 import org.keycloak.models.ClientModel;
-import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RequiredActionProviderModel;
 import org.keycloak.models.utils.DefaultAuthenticationFlows;
 import org.keycloak.representations.idm.RequiredActionProviderRepresentation;
 import org.keycloak.services.resources.KeycloakOpenAPI;
-import org.keycloak.services.resources.admin.permissions.AdminPermissionEvaluator;
+import org.keycloak.services.resources.admin.fgap.AdminPermissionEvaluator;
+
+import org.eclipse.microprofile.openapi.annotations.Operation;
+import org.eclipse.microprofile.openapi.annotations.enums.SchemaType;
+import org.eclipse.microprofile.openapi.annotations.media.Content;
+import org.eclipse.microprofile.openapi.annotations.media.Schema;
+import org.eclipse.microprofile.openapi.annotations.responses.APIResponse;
+import org.eclipse.microprofile.openapi.annotations.tags.Tag;
+import org.jboss.logging.Logger;
+import org.jboss.resteasy.reactive.NoCache;
 
 
 public class AuthenticationManagementResource extends RoleMappingResource {
+
+    private static final Logger logger = Logger.getLogger(AuthenticationManagementResource.class);
+
     public AuthenticationManagementResource(KeycloakSession session, RealmModel realm, AdminPermissionEvaluator auth) {
         super(session, realm, auth);
     }
@@ -64,7 +71,7 @@ public class AuthenticationManagementResource extends RoleMappingResource {
 
         return realm.getAuthenticationFlowsStream()
                 .filter(flow -> flow.isTopLevel() && !Objects.equals(flow.getAlias(), DefaultAuthenticationFlows.SAML_ECP_FLOW))
-                .map(flow -> AuthenticationMapper.convertToModel(flow, realm))
+                .map(flow -> AuthenticationMapper.convertToModel(super.session, flow, realm, auth))
                 .collect(Collectors.toList());
 
     }
@@ -83,16 +90,16 @@ public class AuthenticationManagementResource extends RoleMappingResource {
             description = "",
             content = {@Content(
                     schema = @Schema(
-                            implementation = String.class,
+                            implementation = UsedByReference.class,
                             type = SchemaType.ARRAY
                     )
             )}
     )
-    public final List<String> listUsed(@PathParam("id") String id, @PathParam("type") String type, @QueryParam("first") @DefaultValue("0") long first,
-            @QueryParam("max") @DefaultValue("10") long max, @QueryParam("search") @DefaultValue("") String search) {
+    public final List<UsedByReference> listUsed(@PathParam("id") String id, @PathParam("type") String type, @QueryParam("first") @DefaultValue("0") int first,
+            @QueryParam("max") @DefaultValue("10") int max, @QueryParam("search") @DefaultValue("") String search) {
         auth.realm().requireViewAuthenticationFlows();
 
-        final AuthenticationFlowModel flow = realm.getAuthenticationFlowsStream().filter(f -> id.equals(f.getId())).collect(Collectors.toList()).get(0);
+        final AuthenticationFlowModel flow = realm.getAuthenticationFlowsStream().filter(f -> id.equals(f.getId())).toList().get(0);
 
         if ("clients".equals(type)) {
             final Stream<ClientModel> clients = realm.getClientsStream();
@@ -100,16 +107,15 @@ public class AuthenticationManagementResource extends RoleMappingResource {
                             c -> c.getAuthenticationFlowBindingOverrides().get("browser") != null && c.getAuthenticationFlowBindingOverrides()
                                     .get("browser").equals(flow.getId()) || c.getAuthenticationFlowBindingOverrides()
                                     .get("direct_grant") != null && c.getAuthenticationFlowBindingOverrides().get("direct_grant").equals(flow.getId()))
-                    .map(ClientModel::getClientId).filter(f -> f.contains(search))
-                    .skip("".equals(search) ? first : 0).limit(max).collect(Collectors.toList());
+                    .filter(auth.clients()::canView)
+                    .map(c -> new UsedByReference(c.getId(), c.getClientId())).filter(ref -> ref.getLabel().contains(search))
+                    .skip(first).limit(max).collect(Collectors.toList());
         }
 
         if ("idp".equals(type)) {
-            final Stream<IdentityProviderModel> identityProviders = realm.getIdentityProvidersStream();
-            return identityProviders.filter(idp -> flow.getId().equals(idp.getFirstBrokerLoginFlowId())
-                            || flow.getId().equals(idp.getPostBrokerLoginFlowId()))
-                    .map(IdentityProviderModel::getAlias).filter(f -> f.contains(search))
-                    .skip("".equals(search) ? first : 0).limit(max).collect(Collectors.toList());
+            auth.realm().requireViewIdentityProviders();
+            return session.identityProviders().getByFlow(flow.getId(), search, first, max)
+                    .map(alias -> new UsedByReference(null, alias)).collect(Collectors.toList());
         }
 
         throw new IllegalArgumentException("Invalid type");
@@ -145,7 +151,12 @@ public class AuthenticationManagementResource extends RoleMappingResource {
         rep.setConfig(model.getConfig());
 
         RequiredActionFactory factory = (RequiredActionFactory)session.getKeycloakSessionFactory().getProviderFactory(RequiredActionProvider.class, model.getProviderId());
-        rep.setConfigurable(factory.isConfigurable());
+        if (factory != null) {
+            rep.setConfigurable(factory.isConfigurable());
+        } else {
+            logger.warnv("Detected RequiredAction with missing provider. realm={0}, alias={1}, providerId={2}",
+                    realm.getName(), model.getAlias(), model.getProviderId());
+        }
 
         return rep;
     }

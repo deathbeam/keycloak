@@ -1,6 +1,12 @@
 import type ClientRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientRepresentation";
+import type PolicyRepresentation from "@keycloak/keycloak-admin-client/lib/defs/policyRepresentation";
 import type ResourceRepresentation from "@keycloak/keycloak-admin-client/lib/defs/resourceRepresentation";
-import type ResourceServerRepresentation from "@keycloak/keycloak-admin-client/lib/defs/resourceServerRepresentation";
+import {
+  HelpItem,
+  TextControl,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
   Alert,
@@ -15,20 +21,17 @@ import { useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
-import { HelpItem, TextControl } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
 import { DefaultSwitchControl } from "../../components/SwitchControl";
-import { useAlerts } from "../../components/alert/Alerts";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
 import { FormAccess } from "../../components/form/FormAccess";
 import { KeyValueInput } from "../../components/key-value-form/KeyValueInput";
 import type { KeyValueType } from "../../components/key-value-form/key-value-convert";
-import { KeycloakSpinner } from "../../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { MultiLineInput } from "../../components/multi-line-input/MultiLineInput";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useAccess } from "../../context/access/Access";
 import { convertFormValuesToObject, convertToFormValues } from "../../util";
-import { useFetch } from "../../utils/useFetch";
 import { useParams } from "../../utils/useParams";
 import { toAuthorizationTab } from "../routes/AuthenticationTab";
 import { ResourceDetailsParams, toResourceDetails } from "../routes/Resource";
@@ -49,8 +52,7 @@ export default function ResourceDetails() {
   const [client, setClient] = useState<ClientRepresentation>();
   const [resource, setResource] = useState<ResourceRepresentation>();
 
-  const [permissions, setPermission] =
-    useState<ResourceServerRepresentation[]>();
+  const [permissions, setPermission] = useState<PolicyRepresentation[]>();
 
   const { addAlert, addError } = useAlerts();
   const form = useForm<SubmittedResource>({
@@ -107,7 +109,9 @@ export default function ResourceDetails() {
           resource,
         );
         setResource(resource);
-        navigate(toResourceDetails({ realm, id, resourceId: result._id! }));
+        void navigate(
+          toResourceDetails({ realm, id, resourceId: result._id! }),
+        );
       }
       addAlert(
         t((resourceId ? "update" : "create") + "ResourceSuccess"),
@@ -150,7 +154,9 @@ export default function ResourceDetails() {
           resourceId: resourceId!,
         });
         addAlert(t("resourceDeletedSuccess"), AlertVariant.success);
-        navigate(toAuthorizationTab({ realm, clientId: id, tab: "resources" }));
+        void navigate(
+          toAuthorizationTab({ realm, clientId: id, tab: "resources" }),
+        );
       } catch (error) {
         addError("resourceDeletedError", error);
       }

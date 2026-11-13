@@ -11,7 +11,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { SelectControl, TextControl } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../../components/form/FormAccess";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { convertFormValuesToObject, convertToFormValues } from "../../util";
@@ -100,10 +100,7 @@ export const CibaPolicy = ({ realm, realmUpdated }: CibaPolicyProps) => {
                 value: CIBA_EXPIRES_IN_MAX,
                 message: t("lessThan", { value: CIBA_EXPIRES_IN_MAX }),
               },
-              required: {
-                value: true,
-                message: t("required"),
-              },
+              required: t("required"),
             }}
           />
           <TextControl
@@ -124,10 +121,7 @@ export const CibaPolicy = ({ realm, realmUpdated }: CibaPolicyProps) => {
                 value: CIBA_INTERVAL_MAX,
                 message: t("lessThan", { value: CIBA_INTERVAL_MAX }),
               },
-              required: {
-                value: true,
-                message: t("required"),
-              },
+              required: t("required"),
             }}
           />
           <SelectControl

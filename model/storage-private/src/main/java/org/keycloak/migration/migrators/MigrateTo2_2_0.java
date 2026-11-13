@@ -17,13 +17,15 @@
 
 package org.keycloak.migration.migrators;
 
-import org.jboss.logging.Logger;
 import org.keycloak.migration.ModelVersion;
 import org.keycloak.models.IdentityProviderModel;
+import org.keycloak.models.IdentityProviderQuery;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.utils.DefaultAuthenticationFlows;
 import org.keycloak.representations.idm.RealmRepresentation;
+
+import org.jboss.logging.Logger;
 
 public class MigrateTo2_2_0 implements Migration {
     public static final ModelVersion VERSION = new ModelVersion("2.2.0");
@@ -35,23 +37,27 @@ public class MigrateTo2_2_0 implements Migration {
     }
 
     public void migrate(KeycloakSession session) {
-        session.realms().getRealmsStream().forEach(this::addIdentityProviderAuthenticator);
+        RealmModel sessionRealm = session.getContext().getRealm();
+        session.realms().getRealmsStream().forEach(realm -> {
+            session.getContext().setRealm(realm);
+            addIdentityProviderAuthenticator(session, realm);
+        });
+        session.getContext().setRealm(sessionRealm);
     }
 
     @Override
     public void migrateImport(KeycloakSession session, RealmModel realm, RealmRepresentation rep, boolean skipUserDependent) {
-        addIdentityProviderAuthenticator(realm);
-
+        RealmModel sessionRealm = session.getContext().getRealm();
+        session.getContext().setRealm(realm);
+        addIdentityProviderAuthenticator(session, realm);
+        session.getContext().setRealm(sessionRealm);
     }
 
-    private void addIdentityProviderAuthenticator(RealmModel realm) {
-        String defaultProvider = realm.getIdentityProvidersStream()
-                .filter(IdentityProviderModel::isEnabled)
-                .filter(IdentityProviderModel::isAuthenticateByDefault)
+    private void addIdentityProviderAuthenticator(KeycloakSession session, RealmModel realm) {
+        String defaultProvider = session.identityProviders()
+                .getAllStream(IdentityProviderQuery.userAuthentication().with(IdentityProviderModel.ENABLED, "true").with(IdentityProviderModel.AUTHENTICATE_BY_DEFAULT, "true"), 0, 1)
                 .map(IdentityProviderModel::getAlias)
-                .findFirst()
-                .orElse(null);
-
+                .findFirst().orElse(null);
         DefaultAuthenticationFlows.addIdentityProviderAuthenticator(realm, defaultProvider);
     }
 

@@ -26,7 +26,7 @@ import { useEffect, useMemo, useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../../components/form/FormAccess";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { useServerInfo } from "../../context/server-info/ServerInfoProvider";
@@ -97,7 +97,7 @@ export const PasswordPolicy = ({
   const { passwordPolicies } = useServerInfo();
 
   const { addAlert, addError } = useAlerts();
-  const { realm: realmName } = useRealm();
+  const { realm: realmName, refresh } = useRealm();
 
   const [rows, setRows] = useState<PasswordPolicyTypeRepresentation[]>([]);
   const onSelect = (row: PasswordPolicyTypeRepresentation) => {
@@ -135,8 +135,9 @@ export const PasswordPolicy = ({
       await adminClient.realms.update({ realm: realmName }, updatedRealm);
       realmUpdated(updatedRealm);
       setupForm(updatedRealm);
+      refresh();
       addAlert(t("updatePasswordPolicySuccess"), AlertVariant.success);
-    } catch (error: any) {
+    } catch (error) {
       addError("updatePasswordPolicyError", error);
     }
   };

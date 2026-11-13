@@ -2,20 +2,21 @@ import {
   Button,
   ButtonVariant,
   InputGroup,
+  InputGroupItem,
   TextInput,
   TextInputProps,
-  InputGroupItem,
 } from "@patternfly/react-core";
 import { MinusCircleIcon, PlusCircleIcon } from "@patternfly/react-icons";
 import { Fragment, useEffect, useMemo } from "react";
 import { useFormContext, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
+import { FormErrorText } from "@keycloak/keycloak-ui-shared";
 
 function stringToMultiline(value?: string): string[] {
-  return typeof value === "string" ? value.split("##") : [value || ""];
+  return typeof value === "string" ? value.split("##") : [""];
 }
 
-function toStringValue(formValue: string[]): string {
+function toStringValue(formValue: (string | undefined)[]): string {
   return formValue.join("##");
 }
 
@@ -25,6 +26,7 @@ export type MultiLineInputProps = Omit<TextInputProps, "form"> & {
   isDisabled?: boolean;
   defaultValue?: string[];
   stringify?: boolean;
+  isRequired?: boolean;
 };
 
 export const MultiLineInput = ({
@@ -33,32 +35,40 @@ export const MultiLineInput = ({
   isDisabled = false,
   defaultValue,
   stringify = false,
+  isRequired = false,
   id,
   ...rest
 }: MultiLineInputProps) => {
   const { t } = useTranslation();
-  const { register, setValue, control } = useFormContext();
+  const {
+    register,
+    getValues,
+    setValue,
+    control,
+    formState: { errors },
+  } = useFormContext();
   const value = useWatch({
     name,
     control,
     defaultValue: defaultValue || "",
   });
 
-  const fields = useMemo<string[]>(() => {
+  const fields = useMemo<(string | undefined)[]>(() => {
     let values = stringify
       ? stringToMultiline(
           Array.isArray(value) && value.length === 1 ? value[0] : value,
         )
-      : value;
+      : Array.isArray(value)
+        ? value
+        : [value];
 
-    values =
-      Array.isArray(values) && values.length !== 0
-        ? values
-        : (stringify
-            ? stringToMultiline(defaultValue as string)
-            : defaultValue) || [""];
+    if (!Array.isArray(values) || values.length === 0) {
+      values = (stringify
+        ? stringToMultiline(defaultValue as string)
+        : defaultValue) || [""];
+    }
 
-    return values;
+    return values.map((v) => v ?? "");
   }, [value]);
 
   const remove = (index: number) => {
@@ -73,16 +83,50 @@ export const MultiLineInput = ({
     update([...fields.slice(0, index), value, ...fields.slice(index + 1)]);
   };
 
-  const update = (values: string[]) => {
+  const update = (values: (string | undefined)[]) => {
     const fieldValue = values.flatMap((field) => field);
-    setValue(name, stringify ? toStringValue(fieldValue) : fieldValue, {
-      shouldDirty: true,
-    });
+    // Blank is special and should be "" for stringify and [] for array
+    const isBlank = fieldValue.every((v) => !(v ?? "").trim());
+    setValue(
+      name,
+      isBlank
+        ? stringify
+          ? ""
+          : []
+        : stringify
+          ? toStringValue(fieldValue)
+          : fieldValue,
+      {
+        shouldDirty: true,
+        shouldValidate: true,
+      },
+    );
   };
 
+  // Only seed the form when there is a non-empty default to persist (see #43949).
+  // Seeding blank values caused empty attributes to be submitted on save (#51315).
+  if (
+    typeof getValues(name) === "undefined" &&
+    fields.some((v) => (v ?? "").trim())
+  ) {
+    update(fields);
+  }
+
   useEffect(() => {
-    register(name);
+    register(name, {
+      validate: (value) =>
+        isRequired &&
+        (stringify ? stringToMultiline(value) : value || []).filter(
+          (s: string) => s.trim(),
+        ).length === 0
+          ? t("required")
+          : undefined,
+    });
   }, [register]);
+
+  const getError = () => {
+    return name.split(".").reduce((record: any, key) => record?.[key], errors);
+  };
 
   return (
     <div id={id}>
@@ -101,7 +145,7 @@ export const MultiLineInput = ({
             </InputGroupItem>
             <InputGroupItem>
               <Button
-                data-testid={"remove" + index}
+                data-testid={`${name}-remove${index}`}
                 variant={ButtonVariant.link}
                 onClick={() => remove(index)}
                 tabIndex={-1}
@@ -113,16 +157,19 @@ export const MultiLineInput = ({
             </InputGroupItem>
           </InputGroup>
           {index === fields.length - 1 && (
-            <Button
-              variant={ButtonVariant.link}
-              onClick={append}
-              tabIndex={-1}
-              aria-label={t("add")}
-              data-testid="addValue"
-              isDisabled={!value || isDisabled}
-            >
-              <PlusCircleIcon /> {t(addButtonLabel || "add")}
-            </Button>
+            <>
+              {getError() && <FormErrorText message={t("required")} />}
+              <Button
+                variant={ButtonVariant.link}
+                onClick={append}
+                tabIndex={-1}
+                aria-label={t("add")}
+                data-testid={`${name}-addValue`}
+                isDisabled={!value || isDisabled}
+              >
+                <PlusCircleIcon /> {t(addButtonLabel || "add")}
+              </Button>
+            </>
           )}
         </Fragment>
       ))}

@@ -21,14 +21,15 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Objects;
 
+import org.keycloak.cluster.ClusterEvent;
+import org.keycloak.cluster.ClusterProvider;
+import org.keycloak.marshalling.Marshalling;
+
 import org.infinispan.protostream.WrappedMessage;
 import org.infinispan.protostream.annotations.Proto;
 import org.infinispan.protostream.annotations.ProtoFactory;
 import org.infinispan.protostream.annotations.ProtoField;
 import org.infinispan.protostream.annotations.ProtoTypeId;
-import org.keycloak.cluster.ClusterEvent;
-import org.keycloak.cluster.ClusterProvider;
-import org.keycloak.marshalling.Marshalling;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -57,7 +58,7 @@ public class WrapperClusterEvent implements ClusterEvent {
     @ProtoFactory
     static WrapperClusterEvent protoFactory(String eventKey, String senderAddress, String senderSite, SiteFilter siteFilter, List<WrappedMessage> eventPS) {
         var events = eventPS.stream().map(WrappedMessage::getValue).map(ClusterEvent.class::cast).toList();
-        return new WrapperClusterEvent(eventKey, Marshalling.emptyStringToNull(senderAddress), Marshalling.emptyStringToNull(senderSite), siteFilter, events);
+        return new WrapperClusterEvent(eventKey, senderAddress, senderSite, siteFilter, events);
     }
 
     public static WrapperClusterEvent wrap(String eventKey, Collection<? extends ClusterEvent> events, String senderAddress, String senderSite, ClusterProvider.DCNotify dcNotify, boolean ignoreSender) {

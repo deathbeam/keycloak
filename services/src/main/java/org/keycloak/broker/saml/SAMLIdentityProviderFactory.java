@@ -20,7 +20,6 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-
 import javax.xml.namespace.QName;
 
 import org.keycloak.Config.Scope;
@@ -38,7 +37,10 @@ import org.keycloak.saml.common.exceptions.ParsingException;
 import org.keycloak.saml.common.util.DocumentUtil;
 import org.keycloak.saml.processing.core.saml.v2.util.SAMLMetadataUtil;
 import org.keycloak.saml.validators.DestinationValidator;
+
 import org.w3c.dom.Element;
+
+import static org.keycloak.models.IdentityProviderModel.LEGACY_HIDE_ON_LOGIN_ATTR;
 
 /**
  * @author Pedro Igor
@@ -77,7 +79,6 @@ public class SAMLIdentityProviderFactory extends AbstractIdentityProviderFactory
                 SAMLIdentityProviderConfig samlIdentityProviderConfig = new SAMLIdentityProviderConfig();
                 String singleSignOnServiceUrl = null;
                 boolean postBindingResponse = false;
-                boolean postBindingLogout = false;
                 for (EndpointType endpoint : idpDescriptor.getSingleSignOnService()) {
                     if (endpoint.getBinding().toString().equals(JBossSAMLURIConstants.SAML_HTTP_POST_BINDING.get())) {
                         singleSignOnServiceUrl = endpoint.getLocation().toString();
@@ -88,14 +89,14 @@ public class SAMLIdentityProviderFactory extends AbstractIdentityProviderFactory
                     }
                 }
                 String singleLogoutServiceUrl = null;
+                boolean postBindingLogout = false;
                 for (EndpointType endpoint : idpDescriptor.getSingleLogoutService()) {
-                    if (postBindingResponse && endpoint.getBinding().toString().equals(JBossSAMLURIConstants.SAML_HTTP_POST_BINDING.get())) {
+                    if (endpoint.getBinding().toString().equals(JBossSAMLURIConstants.SAML_HTTP_POST_BINDING.get())) {
                         singleLogoutServiceUrl = endpoint.getLocation().toString();
                         postBindingLogout = true;
                         break;
-                    } else if (!postBindingResponse && endpoint.getBinding().toString().equals(JBossSAMLURIConstants.SAML_HTTP_REDIRECT_BINDING.get())) {
+                    } else if (endpoint.getBinding().toString().equals(JBossSAMLURIConstants.SAML_HTTP_REDIRECT_BINDING.get())) {
                         singleLogoutServiceUrl = endpoint.getLocation().toString();
-                        break;
                     }
 
                 }
@@ -135,6 +136,7 @@ public class SAMLIdentityProviderFactory extends AbstractIdentityProviderFactory
 
                         if (KeyTypes.SIGNING.equals(keyDescriptorType.getUse())) {
                             samlIdentityProviderConfig.addSigningCertificate(x509KeyInfo.getTextContent());
+                            samlIdentityProviderConfig.setValidateSignature(true);
                         } else if (KeyTypes.ENCRYPTION.equals(keyDescriptorType.getUse())) {
                             samlIdentityProviderConfig.setEncryptionPublicKey(x509KeyInfo.getTextContent());
                         } else if (keyDescriptorType.getUse() == null) {
@@ -146,6 +148,7 @@ public class SAMLIdentityProviderFactory extends AbstractIdentityProviderFactory
                 if (defaultCertificate != null) {
                     if (samlIdentityProviderConfig.getSigningCertificates().length == 0) {
                         samlIdentityProviderConfig.addSigningCertificate(defaultCertificate);
+                        samlIdentityProviderConfig.setValidateSignature(true);
                     }
 
                     if (samlIdentityProviderConfig.getEncryptionPublicKey() == null) {
@@ -161,7 +164,7 @@ public class SAMLIdentityProviderFactory extends AbstractIdentityProviderFactory
                     for (AttributeType attribute : entityType.getExtensions().getEntityAttributes().getAttribute()) {
                         if (MACEDIR_ENTITY_CATEGORY.equals(attribute.getName())
                                 && attribute.getAttributeValue().contains(REFEDS_HIDE_FROM_DISCOVERY)) {
-                            samlIdentityProviderConfig.setHideOnLogin(true);
+                            samlIdentityProviderConfig.getConfig().put(LEGACY_HIDE_ON_LOGIN_ATTR, String.valueOf(true));
                         }
                     }
 

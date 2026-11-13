@@ -19,10 +19,11 @@ package org.keycloak.models.cache.infinispan.authorization.events;
 
 import java.util.Set;
 
-import org.infinispan.protostream.annotations.ProtoFactory;
-import org.infinispan.protostream.annotations.ProtoTypeId;
 import org.keycloak.marshalling.Marshalling;
 import org.keycloak.models.cache.infinispan.authorization.StoreFactoryCacheManager;
+
+import org.infinispan.protostream.annotations.ProtoFactory;
+import org.infinispan.protostream.annotations.ProtoTypeId;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -32,7 +33,7 @@ public class ResourceRemovedEvent extends BaseResourceEvent {
 
     @ProtoFactory
     static ResourceRemovedEvent protoFactory(String id, String name, String owner, String serverId, String type, Set<String> uris, Set<String> scopes) {
-        return new ResourceRemovedEvent(id, name, owner, serverId, Marshalling.emptyStringToNull(type), uris, scopes);
+        return new ResourceRemovedEvent(id, name, owner, serverId, type, uris, scopes);
     }
 
     private ResourceRemovedEvent(String id, String name, String owner, String serverId, String type, Set<String> uris, Set<String> scopes) {

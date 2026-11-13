@@ -11,7 +11,7 @@ import { useTranslation } from "react-i18next";
 import { FormErrorText, PasswordInput } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
 import { DefaultSwitchControl } from "../../components/SwitchControl";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import {
   ConfirmDialogModal,
   useConfirmDialog,
@@ -97,7 +97,10 @@ export const ResetPasswordDialog = ({
         id: user.id!,
       });
       const credentialLabel = credentials.find((c) => c.type === "password");
-      if (credentialLabel) {
+      const isLocalCredential =
+        credentialLabel && credentialLabel.federationLink === undefined;
+
+      if (isLocalCredential) {
         await adminClient.users.updateCredentialLabel(
           {
             id: user.id!,
@@ -154,11 +157,11 @@ export const ResetPasswordDialog = ({
             <PasswordInput
               data-testid="passwordField"
               id="password"
-              onChange={(e) => {
-                onChange(e);
+              onChange={async (e) => {
+                await onChange(e);
                 if (passwordConfirmation !== e.currentTarget.value) {
                   setError("passwordConfirmation", {
-                    message: t("confirmPasswordDoesNotMatch").toString(),
+                    message: t("confirmPasswordDoesNotMatch"),
                   });
                 } else {
                   clearErrors("passwordConfirmation");
@@ -184,8 +187,7 @@ export const ResetPasswordDialog = ({
               {...register("passwordConfirmation", {
                 required: true,
                 validate: (value) =>
-                  value === password ||
-                  t("confirmPasswordDoesNotMatch").toString(),
+                  value === password || t("confirmPasswordDoesNotMatch"),
               })}
             />
             {errors.passwordConfirmation && (
@@ -199,6 +201,7 @@ export const ResetPasswordDialog = ({
               name="temporaryPassword"
               label={t("temporaryPassword")}
               labelIcon={t("temporaryPasswordHelpText")}
+              className="pf-v5-u-mb-md"
               defaultValue="true"
             />
           </FormProvider>

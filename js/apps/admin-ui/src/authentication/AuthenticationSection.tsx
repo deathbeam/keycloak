@@ -1,6 +1,9 @@
 import { fetchWithError } from "@keycloak/keycloak-admin-client";
-import type AuthenticationFlowRepresentation from "@keycloak/keycloak-admin-client/lib/defs/authenticationFlowRepresentation";
-import RealmRepresentation from "@keycloak/keycloak-admin-client/lib/defs/realmRepresentation";
+import {
+  KeycloakDataTable,
+  ListEmptyState,
+  useAlerts,
+} from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   Button,
@@ -12,19 +15,15 @@ import {
   ToolbarItem,
 } from "@patternfly/react-core";
 import { sortBy } from "lodash-es";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
-import { KeycloakSpinner } from "../components/keycloak-spinner/KeycloakSpinner";
-import { ListEmptyState } from "../components/list-empty-state/ListEmptyState";
 import {
   RoutableTabs,
   useRoutableTab,
 } from "../components/routable-tabs/RoutableTabs";
-import { KeycloakDataTable } from "../components/table-toolbar/KeycloakDataTable";
 import { ViewHeader } from "../components/view-header/ViewHeader";
 import { useRealm } from "../context/realm-context/RealmContext";
 import helpUrls from "../help-urls";
@@ -36,27 +35,11 @@ import { BindFlowDialog } from "./BindFlowDialog";
 import { DuplicateFlowModal } from "./DuplicateFlowModal";
 import { RequiredActions } from "./RequiredActions";
 import { UsedBy } from "./components/UsedBy";
+import { AuthenticationType } from "./constants";
 import { Policies } from "./policies/Policies";
 import { AuthenticationTab, toAuthentication } from "./routes/Authentication";
 import { toCreateFlow } from "./routes/CreateFlow";
 import { toFlow } from "./routes/Flow";
-
-type UsedBy = "SPECIFIC_CLIENTS" | "SPECIFIC_PROVIDERS" | "DEFAULT";
-
-export type AuthenticationType = AuthenticationFlowRepresentation & {
-  usedBy?: { type?: UsedBy; values: string[] };
-  realm: RealmRepresentation;
-};
-
-export const REALM_FLOWS = new Map<string, string>([
-  ["browserFlow", "browser"],
-  ["registrationFlow", "registration"],
-  ["directGrantFlow", "direct grant"],
-  ["resetCredentialsFlow", "reset credentials"],
-  ["clientAuthenticationFlow", "clients"],
-  ["dockerAuthenticationFlow", "docker auth"],
-  ["firstBrokerLoginFlow", "firstBrokerLogin"],
-]);
 
 const AliasRenderer = ({ id, alias, usedBy, builtIn }: AuthenticationType) => {
   const { t } = useTranslation();
@@ -83,7 +66,11 @@ const AliasRenderer = ({ id, alias, usedBy, builtIn }: AuthenticationType) => {
 export default function AuthenticationSection() {
   const { adminClient } = useAdminClient();
   const { t } = useTranslation();
-  const { realm: realmName, realmRepresentation: realm } = useRealm();
+  const { realm: realmName, refresh: refreshRealm } = useRealm();
+
+  useEffect(() => {
+    refreshRealm();
+  }, []);
   const [key, setKey] = useState(0);
   const refresh = () => setKey(key + 1);
   const { addAlert, addError } = useAlerts();
@@ -144,15 +131,13 @@ export default function AuthenticationSection() {
     },
   });
 
-  if (!realm) return <KeycloakSpinner />;
-
   return (
     <>
       <DeleteConfirm />
-      {open && (
+      {open && selectedFlow && (
         <DuplicateFlowModal
-          name={selectedFlow ? selectedFlow.alias! : ""}
-          description={selectedFlow?.description!}
+          name={selectedFlow.alias!}
+          description={selectedFlow.description!}
           toggleDialog={toggleOpen}
           onComplete={() => {
             refresh();
@@ -244,9 +229,7 @@ export default function AuthenticationSection() {
                 {
                   name: "usedBy",
                   displayKey: "usedBy",
-                  cellRenderer: (row) => (
-                    <UsedBy authType={row} realm={realm} />
-                  ),
+                  cellRenderer: (row) => <UsedBy authType={row} />,
                 },
                 {
                   name: "description",

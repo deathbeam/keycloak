@@ -24,21 +24,22 @@ import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
-import java.util.Set;
-import java.util.stream.Collectors;
 
-import org.jboss.logging.Logger;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
-import org.keycloak.protocol.oidc.utils.PairwiseSubMapperUtils;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.services.ServicesLogger;
 import org.keycloak.services.clientregistration.ClientRegistrationContext;
 import org.keycloak.services.clientregistration.ClientRegistrationProvider;
 import org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy;
 import org.keycloak.services.clientregistration.policy.ClientRegistrationPolicyException;
+import org.keycloak.urls.UrlType;
+import org.keycloak.validation.ClientUriField;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -97,44 +98,45 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
 
         String hostAddress = session.getContext().getConnection().getRemoteAddr();
 
-        verifyHost(hostAddress);
+        logger.debugf("Verifying remote host : %s", session.getContext().getConnection().getRemoteHost());
+
+        if (!verifyHost(hostAddress)) {
+            ServicesLogger.LOGGER.failedToVerifyRemoteHost(session.getContext().getConnection().getRemoteHost());
+            throw new ClientRegistrationPolicyException("Host not trusted.");
+        }
     }
 
-    protected void verifyHost(String hostAddress) throws ClientRegistrationPolicyException {
-        logger.debugf("Verifying remote host : %s", hostAddress);
-
+    protected boolean verifyHost(String hostAddress) {
+        if (hostAddress == null) {
+            return false;
+        }
         List<String> trustedHosts = getTrustedHosts();
         List<String> trustedDomains = getTrustedDomains();
 
         // Verify trustedHosts by their IP addresses
         String verifiedHost = verifyHostInTrustedHosts(hostAddress, trustedHosts);
         if (verifiedHost != null) {
-            return;
+            return true;
         }
 
         // Verify domains if hostAddress hostname belongs to the domain. This assumes proper DNS setup
         verifiedHost = verifyHostInTrustedDomains(hostAddress, trustedDomains);
         if (verifiedHost != null) {
-            return;
+            return true;
         }
 
-        ServicesLogger.LOGGER.failedToVerifyRemoteHost(hostAddress);
-        throw new ClientRegistrationPolicyException("Host not trusted.");
+        return false;
     }
 
 
     protected List<String> getTrustedHosts() {
-        List<String> trustedHostsConfig = componentModel.getConfig().getList(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS);
-        return trustedHostsConfig.stream().filter((String hostname) -> {
-
-            return !hostname.startsWith("*.");
-
-        }).collect(Collectors.toList());
+        List<String> trustedHostsConfig = componentModel.getConfig().getOrDefault(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS, Collections.emptyList());
+        return trustedHostsConfig.stream().filter((String hostname) -> !hostname.startsWith("*.")).toList();
     }
 
 
     protected List<String> getTrustedDomains() {
-        return componentModel.getConfig().getList(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS);
+        return componentModel.getConfig().getOrDefault(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS, Collections.emptyList());
     }
 
     protected String verifyHostInTrustedHosts(String hostAddress, List<String> trustedHosts) {
@@ -170,12 +172,17 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
 
             logger.debugf("Trying verify request from address '%s' of host '%s' by domains", hostAddress, hostname);
 
-            if (hostname.equals(address.getHostAddress())) {
+            // On Windows, reverse lookup for loopback may return the IP (e.g., 127.0.0.1) instead of 'localhost'.
+            // Normalize to 'localhost' for consistent domain checks.
+            if (address.isLoopbackAddress()) {
+                hostname = "localhost";
+            } else if (hostname.equals(address.getHostAddress())) {
                 logger.debugf("The hostAddress '%s' was not resolved to a hostname", hostAddress);
                 return null;
             }
 
-            if (Arrays.stream(InetAddress.getAllByName(hostname)).filter(a -> address.equals(a)).findAny().isEmpty()) {
+            // For non-loopback addresses, perform a forward-confirmation check: the hostname must resolve back to the same address.
+            if (!address.isLoopbackAddress() && Arrays.stream(InetAddress.getAllByName(hostname)).noneMatch(a -> address.equals(a))) {
                 logger.debugf("The hostAddress '%s' is not among the direct lookups returned resolving '%s'", hostAddress, hostname);
                 return null;
             }
@@ -187,7 +194,17 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
                 }
             }
         } catch (UnknownHostException uhe) {
-            logger.debugf(uhe, "Request of address '%s' came from unknown host. Skip verification by domains", hostAddress);
+            logger.debugf(uhe, "Request of address '%s' came from unknown host. Skip verification by domains unless it's within localhost domain", hostAddress);
+
+            String lower = hostAddress == null ? null : hostAddress.toLowerCase();
+            if (lower != null && ("localhost".equals(lower) || lower.endsWith(".localhost"))) {
+                for (String confDomain : trustedDomains) {
+                    if (checkTrustedDomain(lower, confDomain)) {
+                        logger.debugf("Treating host '%s' as loopback due to localhost domain and returning success by trusted domain '%s'", lower, confDomain);
+                        return lower;
+                    }
+                }
+            }
         }
 
         return null;
@@ -204,29 +221,60 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
         List<String> trustedDomains = getTrustedDomains();
 
         ClientRepresentation client = context.getClient();
-        String rootUrl = client.getRootUrl();
-        String baseUrl = client.getBaseUrl();
-        String adminUrl = client.getAdminUrl();
-        List<String> redirectUris = client.getRedirectUris();
+        ClientUriField.validate(client, (field, values) -> {
+            for (String value : values) {
+                // These values do not designate a host. Redirect references are covered by
+                // REDIRECT_URIS, including when explicit post-logout URLs accompany the marker.
+                if (field == ClientUriField.POST_LOGOUT_REDIRECT_URIS && ("+".equals(value) || "-".equals(value))) {
+                    continue;
+                }
+                if (field == ClientUriField.WEB_ORIGINS && ("+".equals(value) || "*".equals(value) || "null".equals(value))) {
+                    continue;
+                }
+                if (field == ClientUriField.LOGO_URI && value.regionMatches(true, 0, "data:", 0, 5)) {
+                    continue;
+                }
+                String uri = field == ClientUriField.ROOT_URL ? value : relativeToAbsoluteURI(field, client.getRootUrl(), value);
+                if (uri == null) {
+                    continue;
+                }
+                if (field == ClientUriField.WEB_ORIGINS && !uri.contains("://")) {
+                    // Legacy web origins can omit the scheme, including IPv6 literals and ports.
+                    uri = "https://" + uri;
+                }
+                switch (field) {
+                    case REDIRECT_URIS, POST_LOGOUT_REDIRECT_URIS, REQUEST_URIS, WEB_ORIGINS -> checkURITrusted(uri, trustedHosts, trustedDomains);
+                    default -> checkURLTrusted(uri, trustedHosts, trustedDomains);
+                }
+            }
+        });
+    }
 
-        baseUrl = relativeToAbsoluteURI(rootUrl, baseUrl);
-        adminUrl = relativeToAbsoluteURI(rootUrl, adminUrl);
-        Set<String> resolvedRedirects = PairwiseSubMapperUtils.resolveValidRedirectUris(rootUrl, redirectUris);
-
-        if (rootUrl != null) {
-            checkURLTrusted(rootUrl, trustedHosts, trustedDomains);
+    private String relativeToAbsoluteURI(ClientUriField field, String rootUrl, String value) {
+        boolean resolvesAgainstRoot = switch (field) {
+            case ADMIN_URL, REDIRECT_URIS, POST_LOGOUT_REDIRECT_URIS, REQUEST_URIS,
+                    BACKCHANNEL_LOGOUT_URL, JWKS_URL -> true;
+            default -> false;
+        };
+        if (value.startsWith("//") && !resolvesAgainstRoot) {
+            // Front-channel logout uses its URI (or the base URL fallback) as supplied to the browser.
+            // RedirectUtils and ResolveRelative instead append even double-slash paths to the root.
+            return "https:" + value;
         }
-
-        if (baseUrl != null) {
-            checkURLTrusted(baseUrl, trustedHosts, trustedDomains);
+        if (field == ClientUriField.LOGO_URI) {
+            try {
+                URI logoUri = new URI(value);
+                // Logos are rendered as supplied to the browser, independently of the client root.
+                return logoUri.isAbsolute() ? value
+                        : session.getContext().getUri(UrlType.FRONTEND).getBaseUri().resolve(logoUri).toString();
+            } catch (URISyntaxException e) {
+                throw new ClientRegistrationPolicyException("URI is malformed");
+            }
         }
-        if (adminUrl != null) {
-            checkURLTrusted(adminUrl, trustedHosts, trustedDomains);
+        if (!value.startsWith("/")) {
+            return value;
         }
-        for (String redirect : resolvedRedirects) {
-            checkURITrusted(redirect, trustedHosts, trustedDomains);
-        }
-
+        return rootUrl == null || rootUrl.isEmpty() ? null : rootUrl + value;
     }
 
     protected void checkURLTrusted(String url, List<String> trustedHosts, List<String> trustedDomains) throws ClientRegistrationPolicyException {
@@ -262,6 +310,10 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
     }
 
     private boolean checkHostTrusted(String host, List<String> trustedHosts, List<String> trustedDomains) {
+        if (host == null) {
+            return false;
+        }
+
         for (String trustedHost : trustedHosts) {
             if (host.equals(trustedHost)) {
                 return true;
@@ -277,20 +329,6 @@ public class TrustedHostClientRegistrationPolicy implements ClientRegistrationPo
         return false;
     }
 
-
-    private static String relativeToAbsoluteURI(String rootUrl, String relative) {
-        if (relative == null) {
-            return null;
-        }
-
-        if (!relative.startsWith("/")) {
-            return relative;
-        } else if (rootUrl == null || rootUrl.isEmpty()) {
-            return null;
-        }
-
-        return rootUrl + relative;
-    }
 
     boolean isHostMustMatch() {
         return parseBoolean(TrustedHostClientRegistrationPolicyFactory.HOST_SENDING_REGISTRATION_REQUEST_MUST_MATCH);

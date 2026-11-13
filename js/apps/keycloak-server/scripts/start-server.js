@@ -16,6 +16,8 @@ const LOCAL_DIST_NAME = "keycloak-999.0.0-SNAPSHOT.tar.gz";
 const SCRIPT_EXTENSION = process.platform === "win32" ? ".bat" : ".sh";
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "admin";
+const CLIENT_ID = "temporary-admin-service";
+const CLIENT_SECRET = "temporary-admin-service";
 
 const options = {
   local: {
@@ -37,8 +39,10 @@ async function startServer() {
   await downloadServer(scriptArgs.local);
 
   const env = {
-    KEYCLOAK_ADMIN: ADMIN_USERNAME,
-    KEYCLOAK_ADMIN_PASSWORD: ADMIN_PASSWORD,
+    KC_BOOTSTRAP_ADMIN_USERNAME: ADMIN_USERNAME,
+    KC_BOOTSTRAP_ADMIN_PASSWORD: ADMIN_PASSWORD,
+    KC_BOOTSTRAP_ADMIN_CLIENT_ID: CLIENT_ID,
+    KC_BOOTSTRAP_ADMIN_CLIENT_SECRET: CLIENT_SECRET,
     ...process.env,
   };
 
@@ -56,7 +60,8 @@ async function startServer() {
     path.join(SERVER_DIR, `bin/kc${SCRIPT_EXTENSION}`),
     [
       "start-dev",
-      `--features="login2,account3,admin-fine-grained-authz,transient-users,oid4vc-vci"`,
+      `--features="ssf,transient-users,oid4vc-vci,declarative-ui,quick-theme,spiffe,kubernetes-service-accounts,workflows,client-auth-federated,openapi,client-admin-api:v2,resource-indicators"`,
+      "--openapi-enabled=true",
       ...keycloakArgs,
     ],
     {

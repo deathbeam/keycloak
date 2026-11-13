@@ -17,15 +17,15 @@
 
 package org.keycloak.email;
 
+import java.util.List;
+import java.util.Map;
+
 import org.keycloak.events.Event;
 import org.keycloak.models.OrganizationModel;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.provider.Provider;
 import org.keycloak.sessions.AuthenticationSessionModel;
-
-import java.util.List;
-import java.util.Map;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -41,6 +41,28 @@ public interface EmailTemplateProvider extends Provider {
     EmailTemplateProvider setUser(UserModel user);
 
     EmailTemplateProvider setAttribute(String name, Object value);
+
+    /**
+     * Builds the reset password email without sending it. Override together with
+     * {@link #send(RenderedEmail, int, EmailDeliveryListener)}.
+     *
+     * @return the email, or {@code null} if this provider can only send right away
+     */
+    default RenderedEmail renderPasswordReset(String link, long expirationInMinutes) throws EmailException {
+        return null;
+    }
+
+    /**
+     * Sends an email built by one of the {@code render} methods, in the background after the transaction commits when
+     * possible, otherwise right away.
+     *
+     * @param expiresAt time in seconds after which the email is no longer worth sending, {@code 0} for no limit
+     * @param onFailed called if sending in the background fails later
+     * @throws EmailException
+     */
+    default void send(RenderedEmail email, int expiresAt, EmailDeliveryListener onFailed) throws EmailException {
+        throw new UnsupportedOperationException("Sending emails in the background is not supported by " + getClass().getName());
+    }
 
     void sendEvent(Event event) throws EmailException;
 
@@ -76,6 +98,8 @@ public interface EmailTemplateProvider extends Provider {
      */
     void sendExecuteActions(String link, long expirationInMinutes) throws EmailException;
 
+    void sendVerifiableCredentialOffer(String link, long expirationInMinutes) throws EmailException;
+
     void sendVerifyEmail(String link, long expirationInMinutes) throws EmailException;
 
     void sendOrgInviteEmail(OrganizationModel organization, String link, long expirationInMinutes) throws EmailException;
@@ -102,4 +126,26 @@ public interface EmailTemplateProvider extends Provider {
      * @throws EmailException
      */
     void send(String subjectFormatKey, List<Object> subjectAttributes, String bodyTemplate, Map<String, Object> bodyAttributes) throws EmailException;
+    /**
+     * Send formatted email to a specific address, ignoring the user's email
+     *
+     * @param subjectFormatKey message property that will be used to format email subject
+     * @param bodyTemplate freemarker template file
+     * @param bodyAttributes attributes used to fill template
+     * @param destinationEmail the email address to send the email to
+     * @throws EmailException
+     */
+    void send(String subjectFormatKey, String bodyTemplate, Map<String, Object> bodyAttributes, String destinationEmail) throws EmailException;
+
+    /**
+     * Send formatted email to a specific address, ignoring the user's email
+     *
+     * @param subjectFormatKey message property that will be used to format email subject
+     * @param subjectAttributes attributes used to fill subject format message
+     * @param bodyTemplate freemarker template file
+     * @param bodyAttributes attributes used to fill template
+     * @param destinationEmail the email address to send the email to
+     * @throws EmailException
+     */
+    void send(String subjectFormatKey, List<Object> subjectAttributes, String bodyTemplate, Map<String, Object> bodyAttributes, String destinationEmail) throws EmailException;
 }

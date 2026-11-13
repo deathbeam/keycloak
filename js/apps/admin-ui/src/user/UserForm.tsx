@@ -1,6 +1,9 @@
 import type GroupRepresentation from "@keycloak/keycloak-admin-client/lib/defs/groupRepresentation";
 import type RealmRepresentation from "@keycloak/keycloak-admin-client/lib/defs/realmRepresentation";
-import { UserProfileMetadata } from "@keycloak/keycloak-admin-client/lib/defs/userProfileMetadata";
+import {
+  UserProfileAttributeMetadata,
+  UserProfileMetadata,
+} from "@keycloak/keycloak-admin-client/lib/defs/userProfileMetadata";
 import type UserRepresentation from "@keycloak/keycloak-admin-client/lib/defs/userRepresentation";
 import {
   FormErrorText,
@@ -8,8 +11,10 @@ import {
   SwitchControl,
   TextControl,
   UserProfileFields,
+  ContinueCancelModal,
 } from "@keycloak/keycloak-ui-shared";
 import {
+  Alert,
   AlertVariant,
   Button,
   Chip,
@@ -26,7 +31,7 @@ import { Controller, FormProvider, UseFormReturn } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../admin-client";
 import { DefaultSwitchControl } from "../components/SwitchControl";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../components/form/FormAccess";
 import { GroupPickerDialog } from "../components/group/GroupPickerDialog";
 import { useAccess } from "../context/access/Access";
@@ -39,6 +44,10 @@ import { toUsers } from "./routes/Users";
 import { FixedButtonsGroup } from "../components/form/FixedButtonGroup";
 import { RequiredActionMultiSelect } from "./user-credentials/RequiredActionMultiSelect";
 import { useNavigate } from "react-router-dom";
+import { CopyToClipboardButton } from "../components/copy-to-clipboard-button/CopyToClipboardButton";
+import { GroupResourceContext } from "../context/group-resource/GroupResourceContext";
+
+const TERMS_AND_CONDITIONS_ATTRIBUTE = "terms_and_conditions";
 
 export type BruteForced = {
   isBruteForceProtected?: boolean;
@@ -52,6 +61,7 @@ export type UserFormProps = {
   bruteForce?: BruteForced;
   userProfileMetadata?: UserProfileMetadata;
   save: (user: UserFormFields) => void;
+  refresh?: () => void;
   onGroupsUpdate?: (groups: GroupRepresentation[]) => void;
 };
 
@@ -65,6 +75,7 @@ export const UserForm = ({
   },
   userProfileMetadata,
   save,
+  refresh,
   onGroupsUpdate,
 }: UserFormProps) => {
   const { adminClient } = useAdminClient();
@@ -76,7 +87,10 @@ export const UserForm = ({
   const isManager = hasAccess("manage-users");
   const canViewFederationLink = hasAccess("view-realm");
   const { whoAmI } = useWhoAmI();
-  const currentLocale = whoAmI.getLocale();
+
+  const termsAndConditionsAcceptedDate = toTermsAndConditionsAcceptedDate(
+    user?.attributes?.[TERMS_AND_CONDITIONS_ATTRIBUTE],
+  );
 
   const { handleSubmit, setValue, control, reset, formState } = form;
   const { errors } = formState;
@@ -94,8 +108,11 @@ export const UserForm = ({
 
   const unLockUser = async () => {
     try {
-      await adminClient.attackDetection.del({ id: user!.id! });
+      await adminClient.users.update({ id: user!.id! }, { enabled: true });
       addAlert(t("unlockSuccess"), AlertVariant.success);
+      if (refresh) {
+        refresh();
+      }
     } catch (error) {
       addError("unlockError", error);
     }
@@ -133,9 +150,37 @@ export const UserForm = ({
 
   const onFormReset = () => {
     if (user?.id) {
-      reset(toUserFormFields(user));
+      reset(toUserFormFields(user, userProfileMetadata));
     } else {
-      navigate(toUsers({ realm: realm.realm! }));
+      void navigate(toUsers({ realm: realm.realm! }));
+    }
+  };
+
+  const allFieldsReadOnly = () =>
+    user?.userProfileMetadata?.attributes &&
+    !user.userProfileMetadata.attributes
+      .map((a) => a.readOnly)
+      .reduce((p, c) => p && c, true);
+
+  const handleEmailVerificationReset = async () => {
+    try {
+      save(
+        toUserFormFields({
+          ...user,
+          requiredActions: user?.requiredActions?.filter(
+            (action) => action !== "UPDATE_EMAIL",
+          ),
+          attributes: {
+            ...user?.attributes,
+            "kc.email.pending": "",
+          },
+        }),
+      );
+      if (refresh) {
+        refresh();
+      }
+    } catch (error) {
+      addError("emailPendingVerificationUpdateError", error);
     }
   };
 
@@ -149,30 +194,49 @@ export const UserForm = ({
     >
       <FormProvider {...form}>
         {open && (
-          <GroupPickerDialog
-            type="selectMany"
-            text={{
-              title: "selectGroups",
-              ok: "join",
-            }}
-            canBrowse={isManager}
-            onConfirm={(groups) => {
-              user?.id ? addGroups(groups || []) : addChips(groups || []);
-              setOpen(false);
-            }}
-            onClose={() => setOpen(false)}
-            filterGroups={selectedGroups}
-          />
+          <GroupResourceContext value={adminClient.groups}>
+            <GroupPickerDialog
+              type="selectMany"
+              text={{
+                title: "selectGroups",
+                ok: "join",
+              }}
+              canBrowse={isManager}
+              onConfirm={async (groups) => {
+                if (user?.id) {
+                  await addGroups(groups || []);
+                } else {
+                  await addChips(groups || []);
+                }
+
+                setOpen(false);
+              }}
+              onClose={() => setOpen(false)}
+              filterGroups={selectedGroups}
+            />
+          </GroupResourceContext>
         )}
         {user?.id && (
           <>
             <FormGroup label={t("id")} fieldId="kc-id" isRequired>
-              <TextInput
-                id={user.id}
-                aria-label={t("userID")}
-                value={user.id}
-                readOnly
-              />
+              <InputGroup>
+                <InputGroupItem isFill>
+                  <TextInput
+                    id={user.id}
+                    aria-label={t("userID")}
+                    value={user.id}
+                    readOnly
+                  />
+                </InputGroupItem>
+                <InputGroupItem>
+                  <CopyToClipboardButton
+                    id={`user-${user.id}`}
+                    text={user.id}
+                    label={t("userID")}
+                    variant="control"
+                  />
+                </InputGroupItem>
+              </InputGroup>
             </FormGroup>
             <FormGroup
               label={t("createdAt")}
@@ -192,7 +256,7 @@ export const UserForm = ({
           label="requiredUserActions"
           help="requiredUserActionsHelp"
         />
-        {(user?.federationLink || user?.origin) && canViewFederationLink && (
+        {user?.federationLink && canViewFederationLink && (
           <FormGroup
             label={t("federationLink")}
             labelIcon={
@@ -212,12 +276,58 @@ export const UserForm = ({
               label={t("emailVerified")}
               labelIcon={t("emailVerifiedHelp")}
             />
+            {termsAndConditionsAcceptedDate && (
+              <FormGroup
+                label={t("termsAndConditionsUserAttribute")}
+                fieldId={TERMS_AND_CONDITIONS_ATTRIBUTE}
+              >
+                <span
+                  id={TERMS_AND_CONDITIONS_ATTRIBUTE}
+                  data-testid={TERMS_AND_CONDITIONS_ATTRIBUTE}
+                >
+                  {formatDate(termsAndConditionsAcceptedDate)}
+                </span>
+              </FormGroup>
+            )}
+            {user?.attributes?.["kc.email.pending"] && (
+              <Alert
+                variant={AlertVariant.warning}
+                isInline
+                isPlain
+                title={t("emailPendingVerificationAlertTitle")}
+              >
+                {t("userNotYetConfirmedNewEmail", {
+                  email: user.attributes!["kc.email.pending"],
+                })}
+                <ContinueCancelModal
+                  buttonTitle={t("emailPendingVerificationResetAction")}
+                  modalTitle={t("confirmEmailPendingVerificationAction")}
+                  continueLabel={t("confirm")}
+                  cancelLabel={t("cancel")}
+                  buttonVariant="link"
+                  onContinue={handleEmailVerificationReset}
+                >
+                  {t("emailPendingVerificationActionMessage")}
+                </ContinueCancelModal>
+              </Alert>
+            )}
             <UserProfileFields
               form={form}
-              userProfileMetadata={userProfileMetadata}
+              userProfileMetadata={{
+                ...userProfileMetadata,
+                attributes: userProfileMetadata.attributes?.filter(
+                  (attribute: UserProfileAttributeMetadata) => {
+                    return (
+                      attribute.name !== "kc.email.pending" &&
+                      (attribute.name !== TERMS_AND_CONDITIONS_ATTRIBUTE ||
+                        !termsAndConditionsAcceptedDate)
+                    );
+                  },
+                ),
+              }}
               hideReadOnly={!user}
               supportedLocales={realm.supportedLocales || []}
-              currentLocale={currentLocale}
+              currentLocale={whoAmI.locale}
               t={
                 ((key: unknown, params) =>
                   t(key as string, params as any)) as TFunction
@@ -276,12 +386,9 @@ export const UserForm = ({
             <Switch
               data-testid="user-locked-switch"
               id="temporaryLocked"
-              onChange={(_event, value) => {
-                unLockUser();
+              onChange={async (_event, value) => {
+                await unLockUser();
                 setLocked(value);
-                save({
-                  enabled: !value,
-                });
               }}
               isChecked={locked}
               isDisabled={!locked}
@@ -340,9 +447,21 @@ export const UserForm = ({
         saveText={user?.id ? t("save") : t("create")}
         reset={onFormReset}
         resetText={user?.id ? t("revert") : t("cancel")}
-        isActive
+        isDisabled={allFieldsReadOnly()}
         isSubmit
       />
     </FormAccess>
   );
 };
+
+function toTermsAndConditionsAcceptedDate(value: unknown): Date | undefined {
+  const timestamp = Number(Array.isArray(value) ? value[0] : value);
+
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return undefined;
+  }
+
+  const date = new Date(timestamp * 1000);
+
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}

@@ -23,11 +23,12 @@ import org.openqa.selenium.TimeoutException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.FindBy;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
 import static org.keycloak.testsuite.util.UIUtils.doesElementClassContain;
 import static org.keycloak.testsuite.util.UIUtils.getTextFromElement;
 import static org.keycloak.testsuite.util.WaitUtils.waitUntilElementIsNotPresent;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author Vaclav Muzikar <vmuzikar@redhat.com>
@@ -35,16 +36,16 @@ import static org.keycloak.testsuite.util.WaitUtils.waitUntilElementIsNotPresent
  * Page fragments seem not to be working after migration from CGlib to ByteBuddy in Graphene
  */
 public class ContentAlert {
-    private static final String ROOT_ID = "//ul[@data-testid='alerts']/li[1]//div";
+    private static final String ROOT_ID = "//ul[@data-testid='global-alerts']/li[1]//div";
 
     //The first alert from the alert group is what we are interested in.
     @FindBy(xpath = ROOT_ID)
     private WebElement alertElementRoot;
 
-    @FindBy(className = ROOT_ID + "[@class='pf-v5-c-alert__title']")
+    @FindBy(xpath = ROOT_ID + "//*[@class='pf-v5-c-alert__title']")
     private WebElement messageElement;
 
-    @FindBy(className = ROOT_ID + "[@class='pf-v5-c-alert__action']")
+    @FindBy(xpath = ROOT_ID + "//*[@class='pf-v5-c-alert__action']")
     private WebElement closeBtn;
 
     public boolean isDisplayed() {
@@ -57,7 +58,7 @@ public class ContentAlert {
     }
 
     public void assertIsDisplayed() {
-        assertTrue("Alert is not displayed", isDisplayed());
+        assertTrue(isDisplayed(), "Alert is not displayed");
     }
 
     public void assertIsNotDisplayed() {
@@ -78,7 +79,7 @@ public class ContentAlert {
     }
 
     protected void assertAlertType(String type) {
-        assertTrue("Alert is not " + type, doesElementClassContain(alertElementRoot, type));
+        assertTrue(doesElementClassContain(alertElementRoot, type), "Alert is not " + type);
     }
 
     protected void assertMessage(String expectedMessage) {

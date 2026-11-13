@@ -17,16 +17,28 @@
 
 package org.keycloak.authentication;
 
-import org.jboss.logging.Logger;
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 import org.keycloak.authentication.actiontoken.ActionTokenContext;
 import org.keycloak.authentication.actiontoken.DefaultActionToken;
 import org.keycloak.common.ClientConnection;
-import org.keycloak.events.Details;
-import org.keycloak.events.EventBuilder;
-import org.keycloak.events.EventType;
+import org.keycloak.common.Profile;
 import org.keycloak.common.util.reflections.Types;
 import org.keycloak.credential.CredentialProvider;
 import org.keycloak.credential.CredentialProviderFactory;
+import org.keycloak.events.Details;
+import org.keycloak.events.EventBuilder;
+import org.keycloak.events.EventType;
 import org.keycloak.http.HttpRequest;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.AuthenticationFlowModel;
@@ -34,22 +46,18 @@ import org.keycloak.models.Constants;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.UserSessionModel;
 import org.keycloak.services.managers.AuthenticationManager;
 import org.keycloak.sessions.AuthenticationSessionModel;
+import org.keycloak.util.JsonSerialization;
 import org.keycloak.utils.StringUtil;
 
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Objects;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import org.jboss.logging.Logger;
 
 import static org.keycloak.services.managers.AuthenticationManager.FORCED_REAUTHENTICATION;
-import static org.keycloak.services.managers.AuthenticationManager.SSO_AUTH;
 import static org.keycloak.services.managers.AuthenticationManager.PASSWORD_VALIDATED;
+import static org.keycloak.services.managers.AuthenticationManager.SSO_AUTH;
+import static org.keycloak.utils.StringUtil.isBlank;
 
 public class AuthenticatorUtil {
 
@@ -58,9 +66,24 @@ public class AuthenticatorUtil {
     // It is used for identification of note included in authentication session for storing callback provider factories
     public static String CALLBACKS_FACTORY_IDS_NOTE = "callbacksFactoryProviderIds";
 
+    public static boolean isSSOAuthentication(AuthenticationSessionModel authSession) throws AuthenticationFlowException {
+        String ssoAuthUserId = authSession.getAuthNote(SSO_AUTH);
 
-    public static boolean isSSOAuthentication(AuthenticationSessionModel authSession) {
-        return "true".equals(authSession.getAuthNote(SSO_AUTH));
+        if (isBlank(ssoAuthUserId)) {
+            // no-reauthentication in progress
+            return false;
+        }
+
+        String authenticatedUserId = Optional.ofNullable(authSession.getAuthenticatedUser()).map(UserModel::getId).orElse(null);
+
+        if (ssoAuthUserId.equals(authenticatedUserId)) {
+            // user re-authenticating
+            return true;
+        }
+
+        // fail-hard to prevent user from being able to re-authenticate as a different user in the same authentication session
+        // giving a chance to the authentication flow to handle the illegal state
+        throw new AuthenticationFlowException("Authentication session bound with different user during re-authentication", AuthenticationFlowError.USER_CONFLICT);
     }
 
     public static boolean isForcedReauthentication(AuthenticationSessionModel authSession) {
@@ -82,7 +105,7 @@ public class AuthenticatorUtil {
      * @param authFactoryId authentication factory ID which should be added to the authentication session note
      */
     public static void setAuthCallbacksFactoryIds(AuthenticationSessionModel authSession, String authFactoryId) {
-        if (authSession == null || StringUtil.isBlank(authFactoryId)) return;
+        if (authSession == null || isBlank(authFactoryId)) return;
 
         final String callbacksFactories = authSession.getAuthNote(CALLBACKS_FACTORY_IDS_NOTE);
 
@@ -162,7 +185,37 @@ public class AuthenticatorUtil {
         }
     }
 
-
+    /**
+     * Checks if the execution belongs to the passed flowId. It searches recursively
+     * to see if the execution is under that specific flow.
+     *
+     * @param realm The realm
+     * @param flowId The flow ID to check if has the execution model
+     * @param executionModel The executionModel to check if it belongs to the passed flow ID
+     * @return true if the execution belongs to the flowId, false if not
+     */
+    public static boolean checkExecutionBelongsToFlow(RealmModel realm, String flowId, AuthenticationExecutionModel executionModel) {
+        while (executionModel != null) {
+            if (executionModel.isAuthenticatorFlow() && flowId.equals(executionModel.getFlowId())) {
+                return true;
+            }
+            if (executionModel.getParentFlow() == null) {
+                return false;
+            }
+            AuthenticationFlowModel parentFlow = realm.getAuthenticationFlowById(executionModel.getParentFlow());
+            if (parentFlow == null) {
+                return false;
+            }
+            if (parentFlow.getId().equals(flowId)) {
+                return true;
+            }
+            if (parentFlow.isTopLevel()) {
+                return false;
+            }
+            executionModel = realm.getAuthenticationExecutionByFlowId(parentFlow.getId());
+        }
+        return false;
+    }
 
     /**
      * Logouts all sessions that are different to the current authentication session
@@ -197,14 +250,30 @@ public class AuthenticatorUtil {
                 .filter(s -> !Objects.equals(s.getId(), authSession.getParentSession().getId()))
                 .collect(Collectors.toList()) // collect to avoid concurrent modification as backchannelLogout removes the user sessions.
                 .forEach(s -> {
-                    AuthenticationManager.backchannelLogout(session, realm, s, session.getContext().getUri(),
-                            conn, req.getHttpHeaders(), true);
-
-                    event.event(EventType.LOGOUT)
-                            .session(s)
-                            .user(s.getUser())
-                            .success();
+                    backchannelLogout(session, realm, conn, req, event, s);
                 });
+
+        if (!Profile.isFeatureEnabled(Profile.Feature.LOGOUT_ALL_SESSIONS_V1)) {
+            session.sessions().getOfflineUserSessionsStream(realm, user)
+                    .filter(s -> !Objects.equals(s.getId(), authSession.getParentSession().getId()))
+                    .collect(Collectors.toList()) // collect to avoid concurrent modification as backchannelLogout removes the user sessions.
+                    .forEach(s -> {
+                        backchannelLogout(session, realm, conn, req, event, s);
+                    });
+        }
+
+        session.authenticationSessions().removeRootAuthenticationSessionsByAuthenticatedUser(realm, user,
+                authSession.getParentSession().getId());
+    }
+
+    private static void backchannelLogout(KeycloakSession session, RealmModel realm, ClientConnection conn, HttpRequest req, EventBuilder event, UserSessionModel s) {
+        AuthenticationManager.backchannelLogout(session, realm, s, session.getContext().getUri(),
+                conn, req.getHttpHeaders(), true);
+
+        event.clone().event(EventType.LOGOUT)
+                .session(s)
+                .user(s.getUser())
+                .success();
     }
 
     /**
@@ -215,5 +284,38 @@ public class AuthenticatorUtil {
         return session.getKeycloakSessionFactory().getProviderFactoriesStream(CredentialProvider.class)
                 .filter(f -> Types.supports(CredentialProvider.class, f, CredentialProviderFactory.class))
                 .map(f -> session.getProvider(CredentialProvider.class, f.getId()));
+    }
+
+    /**
+     * Get the list of credentials used in the authentication.
+     * @param authSession The authentication session
+     * @return The immutable list of credentials (empty returned if none)
+     */
+    public static List<String> getAuthnCredentials(AuthenticationSessionModel authSession) {
+        final String authnCredentials = authSession.getAuthNote(AuthenticationProcessor.AUTHN_CREDENTIALS);
+        if (authnCredentials != null) {
+            try {
+                return Arrays.asList(JsonSerialization.readValue(authnCredentials, String[].class));
+            } catch (IOException e) {
+                logger.warn("Invalid array stored as authn.credentials: " + authnCredentials);
+            }
+        }
+        return Collections.emptyList();
+    }
+
+    /**
+     * Adds the credentials to the credentials used in the authentication session.
+     * @param authSession The authentication session
+     * @param credential The credential to add
+     */
+    public static void addAuthCredential(AuthenticationSessionModel authSession, String credential) {
+        List<String> authnCredentials = new LinkedList<>(getAuthnCredentials(authSession));
+        authnCredentials.add(credential);
+        try {
+            authSession.setAuthNote(AuthenticationProcessor.AUTHN_CREDENTIALS, JsonSerialization.writeValueAsString(authnCredentials));
+        } catch (IOException e) {
+            // not expected
+            throw new RuntimeException(e);
+        }
     }
 }

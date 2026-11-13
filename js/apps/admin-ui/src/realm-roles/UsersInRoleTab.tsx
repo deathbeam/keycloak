@@ -5,8 +5,8 @@ import { useNavigate } from "react-router-dom";
 import { useHelp } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../admin-client";
 import type { ClientRoleParams } from "../clients/routes/ClientRole";
-import { ListEmptyState } from "../components/list-empty-state/ListEmptyState";
-import { KeycloakDataTable } from "../components/table-toolbar/KeycloakDataTable";
+import { ListEmptyState } from "@keycloak/keycloak-ui-shared";
+import { KeycloakDataTable } from "@keycloak/keycloak-ui-shared";
 import { useRealm } from "../context/realm-context/RealmContext";
 import { emptyFormatter, upperCaseFormatter } from "../util";
 import { useParams } from "../utils/useParams";
@@ -36,12 +36,13 @@ export const UsersInRoleTab = () => {
       });
     }
 
-    return adminClient.roles.findUsersWithRole({
+    const users = await adminClient.roles.findUsersWithRole({
       name: role.name!,
       briefRepresentation: true,
       first,
       max,
     });
+    return users ?? [];
   };
 
   const { enabled } = useHelp();
@@ -65,7 +66,7 @@ export const UsersInRoleTab = () => {
                   <Button
                     className="kc-groups-link"
                     variant="link"
-                    onClick={() => navigate(`/${realm}/groups`)}
+                    onClick={() => void navigate(`/${realm}/groups`)}
                   >
                     {t("groups")}
                   </Button>
@@ -73,7 +74,7 @@ export const UsersInRoleTab = () => {
                   <Button
                     className="kc-users-link"
                     variant="link"
-                    onClick={() => navigate(`/${realm}/users`)}
+                    onClick={() => void navigate(`/${realm}/users`)}
                   >
                     {t("users")}.
                   </Button>
@@ -102,7 +103,7 @@ export const UsersInRoleTab = () => {
                 <Button
                   className="kc-groups-link-empty-state"
                   variant="link"
-                  onClick={() => navigate(`/${realm}/groups`)}
+                  onClick={() => void navigate(`/${realm}/groups`)}
                 >
                   {t("groups")}
                 </Button>
@@ -110,7 +111,7 @@ export const UsersInRoleTab = () => {
                 <Button
                   className="kc-users-link-empty-state"
                   variant="link"
-                  onClick={() => navigate(`/${realm}/users`)}
+                  onClick={() => void navigate(`/${realm}/users`)}
                 >
                   {t("users")}
                 </Button>

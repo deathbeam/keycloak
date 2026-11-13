@@ -1,4 +1,5 @@
 import type ComponentRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentRepresentation";
+import { useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   ButtonVariant,
@@ -19,7 +20,6 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { ClickableCard } from "../components/keycloak-card/ClickableCard";
 import { KeycloakCard } from "../components/keycloak-card/KeycloakCard";
@@ -28,7 +28,6 @@ import { useRealm } from "../context/realm-context/RealmContext";
 import { useServerInfo } from "../context/server-info/ServerInfoProvider";
 import helpUrls from "../help-urls";
 import { toUpperCase } from "../util";
-import { useFetch } from "../utils/useFetch";
 import { ManagePriorityDialog } from "./ManagePriorityDialog";
 import { toCustomUserFederation } from "./routes/CustomUserFederation";
 import { toNewCustomUserFederation } from "./routes/NewCustomUserFederation";
@@ -77,7 +76,9 @@ export default function UserFederationSection() {
         <DropdownItem
           key={p.id}
           onClick={() =>
-            navigate(toNewCustomUserFederation({ realm, providerId: p.id! }))
+            void navigate(
+              toNewCustomUserFederation({ realm, providerId: p.id! }),
+            )
           }
         >
           {p.id.toUpperCase() == "LDAP"
@@ -202,7 +203,7 @@ export default function UserFederationSection() {
             </TextContent>
             <TextContent>
               <Text className="pf-v5-u-mt-lg" component={TextVariants.h2}>
-                {t("providers")}
+                {t("add-providers")}
               </Text>
             </TextContent>
             <hr className="pf-v5-u-mb-lg" />
@@ -211,7 +212,7 @@ export default function UserFederationSection() {
                 <ClickableCard
                   key={p.id}
                   onClick={() =>
-                    navigate(
+                    void navigate(
                       toNewCustomUserFederation({ realm, providerId: p.id! }),
                     )
                   }

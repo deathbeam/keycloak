@@ -17,8 +17,6 @@
 
 package org.keycloak.models.jpa.entities;
 
-import org.hibernate.annotations.Nationalized;
-
 import jakarta.persistence.Access;
 import jakarta.persistence.AccessType;
 import jakarta.persistence.Column;
@@ -31,6 +29,8 @@ import jakarta.persistence.NamedQueries;
 import jakarta.persistence.NamedQuery;
 import jakarta.persistence.Table;
 
+import org.hibernate.annotations.Nationalized;
+
 /**
  * @author <a href="mailto:leon.graser@bosch-si.com">Leon Graser</a>
  */
@@ -41,6 +41,9 @@ import jakarta.persistence.Table;
 @Entity
 public class RoleAttributeEntity {
 
+    public static final int NAME_MAX_LENGTH = 255;
+    public static final int VALUE_MAX_LENGTH = 255;
+
     @Id
     @Column(name = "ID", length = 36)
     @Access(AccessType.PROPERTY)
@@ -50,11 +53,11 @@ public class RoleAttributeEntity {
     @JoinColumn(name = "ROLE_ID")
     protected RoleEntity role;
 
-    @Column(name = "NAME")
+    @Column(name = "NAME", length = NAME_MAX_LENGTH)
     protected String name;
 
     @Nationalized
-    @Column(name = "VALUE")
+    @Column(name = "VALUE", length = VALUE_MAX_LENGTH)
     protected String value;
 
     public String getId() {

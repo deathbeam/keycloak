@@ -17,25 +17,10 @@
 
 package org.keycloak.connections.infinispan.remote;
 
-import org.infinispan.client.hotrod.impl.InternalRemoteCache;
-import org.infinispan.client.hotrod.impl.operations.PingResponse;
-import org.infinispan.commons.util.concurrent.CompletableFutures;
-import org.infinispan.util.concurrent.ActionSequencer;
-import org.jboss.logging.Logger;
-import org.keycloak.Config;
-import org.keycloak.connections.infinispan.InfinispanConnectionProvider;
-import org.keycloak.health.LoadBalancerCheckProvider;
-import org.keycloak.health.LoadBalancerCheckProviderFactory;
-import org.keycloak.infinispan.util.InfinispanUtils;
-import org.keycloak.models.KeycloakSession;
-import org.keycloak.models.KeycloakSessionFactory;
-import org.keycloak.provider.EnvironmentDependentProviderFactory;
-import org.keycloak.provider.ProviderConfigProperty;
-import org.keycloak.provider.ProviderConfigurationBuilder;
-
 import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
@@ -43,14 +28,35 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.BiFunction;
 import java.util.stream.Collectors;
 
+import org.keycloak.Config;
+import org.keycloak.common.util.MultiSiteUtils;
+import org.keycloak.connections.infinispan.InfinispanConnectionProvider;
+import org.keycloak.health.LoadBalancerCheckProvider;
+import org.keycloak.health.LoadBalancerCheckProviderFactory;
+import org.keycloak.infinispan.util.InfinispanUtils;
+import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.KeycloakSessionFactory;
+import org.keycloak.provider.EnvironmentDependentProviderFactory;
+import org.keycloak.provider.Provider;
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.provider.ProviderConfigurationBuilder;
+
+import org.infinispan.client.hotrod.impl.InternalRemoteCache;
+import org.infinispan.client.hotrod.impl.operations.PingResponse;
+import org.infinispan.commons.util.concurrent.CompletableFutures;
+import org.infinispan.factories.ComponentRegistry;
+import org.infinispan.persistence.manager.PersistenceManager;
+import org.infinispan.util.concurrent.ActionSequencer;
+import org.jboss.logging.Logger;
+
 import static org.keycloak.connections.infinispan.InfinispanConnectionProvider.CLUSTERED_CACHE_NAMES;
 import static org.keycloak.connections.infinispan.InfinispanConnectionProvider.LOCAL_CACHE_NAMES;
-import static org.keycloak.connections.infinispan.InfinispanMultiSiteLoadBalancerCheckProviderFactory.ALWAYS_HEALTHY;
-import static org.keycloak.connections.infinispan.InfinispanMultiSiteLoadBalancerCheckProviderFactory.isAnyEmbeddedCachesDown;
+import static org.keycloak.connections.infinispan.InfinispanConnectionProvider.skipSessionsCacheIfRequired;
 
 public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheckProviderFactory, EnvironmentDependentProviderFactory {
 
     private static final int DEFAULT_POLL_INTERVAL = 5000;
+    private static final LoadBalancerCheckProvider ALWAYS_HEALTHY = () -> false;
     private static final Logger logger = Logger.getLogger(MethodHandles.lookup().lookupClass());
 
     private volatile int pollIntervalMillis;
@@ -61,7 +67,7 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
 
     @Override
     public boolean isSupported(Config.Scope config) {
-        return InfinispanUtils.isRemoteInfinispan();
+        return MultiSiteUtils.isMultiSiteEnabled();
     }
 
     @Override
@@ -85,7 +91,7 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
             }
             this.connectionProvider = provider;
 
-            var remoteCacheChecks = Arrays.stream(CLUSTERED_CACHE_NAMES)
+            var remoteCacheChecks = skipSessionsCacheIfRequired(Arrays.stream(CLUSTERED_CACHE_NAMES))
                     .map(s -> new RemoteCacheCheck(s, provider))
                     .collect(Collectors.toList());
             var sequencer = new ActionSequencer(connectionProvider.getExecutor("load-balancer-check"), false, null);
@@ -118,7 +124,12 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
         return InfinispanUtils.PROVIDER_ORDER;
     }
 
-    @Override
+   @Override
+   public Set<Class<? extends Provider>> dependsOn() {
+      return Set.of(InfinispanConnectionProvider.class);
+   }
+
+   @Override
     public List<ProviderConfigProperty> getConfigMetadata() {
         return ProviderConfigurationBuilder.create()
                 .property()
@@ -135,7 +146,22 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
     }
 
     private boolean isEmbeddedCachesDown() {
-        return isAnyEmbeddedCachesDown(connectionProvider, LOCAL_CACHE_NAMES, logger);
+        for (var name : LOCAL_CACHE_NAMES) {
+            var cache = connectionProvider.getCache(name, false);
+
+            // check if cache is started
+            if (cache == null || !cache.getStatus().allowInvocations()) {
+                logger.debugf("Cache '%s' is not started yet.", name);
+                return true; // no need to check other caches
+            }
+
+            var persistenceManager = ComponentRegistry.componentOf(cache, PersistenceManager.class);
+            if (persistenceManager != null && !persistenceManager.isAvailable()) {
+                logger.debugf("Persistence for embedded cache '%s' is down.", name);
+                return true; // no need to check other caches
+            }
+        }
+        return false;
     }
 
     private record RemoteCacheCheckList(List<RemoteCacheCheck> list, ActionSequencer sequencer) implements Runnable {
@@ -179,7 +205,7 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
                 isDown = false;
             } catch (Exception e) {
                 if (!isDown) {
-                    logger.warnf("Remote cache '%' is down.", name);
+                    logger.warnf("Remote cache '%s' is down.", name);
                 }
                 isDown = true;
             }
@@ -188,8 +214,9 @@ public class RemoteLoadBalancerCheckProviderFactory implements LoadBalancerCheck
 
         @Override
         public Void apply(PingResponse response, Throwable throwable) {
-            logger.debugf("Received Ping response for cache '%s'. Success=%s, Throwable=%s", name, response.isSuccess(), throwable);
-            isDown = throwable != null || !response.isSuccess();
+            var successPing = response != null && response.isSuccess();
+            logger.debugf("Received Ping response for cache '%s'. Success=%s, Throwable=%s", name, successPing, throwable);
+            isDown = throwable != null || !successPing;
             return null;
         }
     }

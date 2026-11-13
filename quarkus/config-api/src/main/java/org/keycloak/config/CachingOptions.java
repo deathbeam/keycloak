@@ -2,19 +2,28 @@ package org.keycloak.config;
 
 import java.io.File;
 import java.util.List;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+
+import com.google.common.base.CaseFormat;
 
 public class CachingOptions {
 
     public static final String CACHE_CONFIG_FILE_PROPERTY = "cache-config-file";
+    public static final String CACHE_CONFIG_MUTATE_PROPERTY = "cache-config-mutate";
 
-    private static final String CACHE_EMBEDDED_MTLS_PREFIX = "cache-embedded-mtls";
+    public static final String CACHE_EMBEDDED_PREFIX = "cache-embedded";
+    private static final String CACHE_EMBEDDED_MTLS_PREFIX = CACHE_EMBEDDED_PREFIX + "-mtls";
     public static final String CACHE_EMBEDDED_MTLS_ENABLED_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-enabled";
     public static final String CACHE_EMBEDDED_MTLS_KEYSTORE_FILE_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-key-store-file";
     public static final String CACHE_EMBEDDED_MTLS_KEYSTORE_PASSWORD_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-key-store-password";
     public static final String CACHE_EMBEDDED_MTLS_TRUSTSTORE_FILE_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-trust-store-file";
     public static final String CACHE_EMBEDDED_MTLS_TRUSTSTORE_PASSWORD_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-trust-store-password";
+    public static final String CACHE_EMBEDDED_MTLS_ROTATION_PROPERTY = CACHE_EMBEDDED_MTLS_PREFIX + "-rotation-interval-days";
+    public static final String CACHE_EMBEDDED_NODE_NAME_PROPERTY = CACHE_EMBEDDED_PREFIX + "-node-name";
+    public static final String CACHE_EMBEDDED_CLUSTER_NAME_PROPERTY = CACHE_EMBEDDED_PREFIX + "-cluster-name";
+    public static final String CACHE_EMBEDDED_NETWORK_BIND_ADDRESS_PROPERTY = CACHE_EMBEDDED_PREFIX + "-network-bind-address";
+    public static final String CACHE_EMBEDDED_NETWORK_BIND_PORT_PROPERTY = CACHE_EMBEDDED_PREFIX + "-network-bind-port";
+    public static final String CACHE_EMBEDDED_NETWORK_EXTERNAL_ADDRESS_PROPERTY = CACHE_EMBEDDED_PREFIX + "-network-external-address";
+    public static final String CACHE_EMBEDDED_NETWORK_EXTERNAL_PORT_PROPERTY = CACHE_EMBEDDED_PREFIX + "-network-external-port";
 
     private static final String CACHE_REMOTE_PREFIX = "cache-remote";
     public static final String CACHE_REMOTE_HOST_PROPERTY = CACHE_REMOTE_PREFIX + "-host";
@@ -22,9 +31,14 @@ public class CachingOptions {
     public static final String CACHE_REMOTE_USERNAME_PROPERTY = CACHE_REMOTE_PREFIX + "-username";
     public static final String CACHE_REMOTE_PASSWORD_PROPERTY = CACHE_REMOTE_PREFIX + "-password";
     public static final String CACHE_REMOTE_TLS_ENABLED_PROPERTY = CACHE_REMOTE_PREFIX + "-tls-enabled";
+    public static final String CACHE_REMOTE_BACKUP_SITES_PROPERTY = CACHE_REMOTE_PREFIX + "-backup-sites";
 
     private static final String CACHE_METRICS_PREFIX = "cache-metrics";
     public static final String CACHE_METRICS_HISTOGRAMS_ENABLED_PROPERTY = CACHE_METRICS_PREFIX + "-histograms-enabled";
+
+    public static final String[] LOCAL_MAX_COUNT_CACHES = new String[]{"authorization", "crl", "keys", "realms", "users", };
+
+    public static final String[] CLUSTERED_MAX_COUNT_CACHES = new String[]{"clientSessions", "offlineSessions", "offlineClientSessions", "sessions"};
 
     public enum Mechanism {
         ispn,
@@ -36,23 +50,6 @@ public class CachingOptions {
             .description("Defines the cache mechanism for high-availability. "
                     + "By default in production mode, a 'ispn' cache is used to create a cluster between multiple server nodes. "
                     + "By default in development mode, a 'local' cache disables clustering and is intended for development and testing purposes.")
-            .defaultValue(Mechanism.ispn)
-            .build();
-
-    public enum Stack {
-        tcp,
-        udp,
-        kubernetes,
-        ec2,
-        azure,
-        google
-    }
-
-    public static final Option<Stack> CACHE_STACK = new OptionBuilder<>("cache-stack", Stack.class)
-            .category(OptionCategory.CACHE)
-            .expectedValues(List.of())
-            .description("Define the default stack to use for cluster communication and node discovery. This option only takes effect "
-                    + "if 'cache' is set to 'ispn'. Default: udp. Built-in values include: " + Stream.of(Stack.values()).map(Stack::name).collect(Collectors.joining(", ")))
             .build();
 
     public static final Option<File> CACHE_CONFIG_FILE = new OptionBuilder<>(CACHE_CONFIG_FILE_PROPERTY, File.class)
@@ -61,16 +58,22 @@ public class CachingOptions {
                     + "The configuration file is relative to the 'conf/' directory.")
             .build();
 
+    public static final Option<Boolean> CACHE_CONFIG_MUTATE = new OptionBuilder<>(CACHE_CONFIG_MUTATE_PROPERTY, Boolean.class)
+            .category(OptionCategory.CACHE)
+            .description("Determines whether changes to the default cache configurations are allowed. This is only recommended for advanced use-cases where the default cache configurations are proven to be problematic. The only supported way to change the default cache configurations is via the other 'cache-...' options.")
+            .defaultValue(Boolean.FALSE)
+            .build();
+
     public static final Option<Boolean> CACHE_EMBEDDED_MTLS_ENABLED = new OptionBuilder<>(CACHE_EMBEDDED_MTLS_ENABLED_PROPERTY, Boolean.class)
             .category(OptionCategory.CACHE)
-            .description("Encrypts the network communication between Keycloak servers.")
-            .defaultValue(Boolean.FALSE)
+            .description("Encrypts the network communication between Keycloak servers. If no additional parameters about a keystore and truststore are provided, ephemeral key pairs and certificates are created and rotated automatically, which is recommended for standard setups.")
+            .defaultValue(Boolean.TRUE)
             .build();
 
     public static final Option<String> CACHE_EMBEDDED_MTLS_KEYSTORE = new OptionBuilder<>(CACHE_EMBEDDED_MTLS_KEYSTORE_FILE_PROPERTY, String.class)
             .category(OptionCategory.CACHE)
             .description("The Keystore file path. The Keystore must contain the certificate to use by the TLS protocol. " +
-                    "By default, it lookup 'cache-mtls-keystore.p12' under conf/ directory.")
+                    "By default, it looks up 'cache-mtls-keystore.p12' under conf/ directory.")
             .build();
 
     public static final Option<String> CACHE_EMBEDDED_MTLS_KEYSTORE_PASSWORD = new OptionBuilder<>(CACHE_EMBEDDED_MTLS_KEYSTORE_PASSWORD_PROPERTY, String.class)
@@ -90,36 +93,74 @@ public class CachingOptions {
             .description("The password to access the Truststore.")
             .build();
 
+    public static final Option<Integer> CACHE_EMBEDDED_MTLS_ROTATION = new OptionBuilder<>(CACHE_EMBEDDED_MTLS_ROTATION_PROPERTY, Integer.class)
+            .category(OptionCategory.CACHE)
+            .defaultValue(30)
+            .description("Rotation period in days of automatic JGroups MTLS certificates.")
+            .build();
+
+    public static final Option<String> CACHE_EMBEDDED_NODE_NAME = new OptionBuilder<>(CACHE_EMBEDDED_NODE_NAME_PROPERTY, String.class)
+            .category(OptionCategory.CACHE)
+            .description("Name of this node in the embedded cluster. Used in log messages and management tools to identify this instance. "
+                    + "If not set, a name is generated automatically.")
+            .build();
+
+    public static final Option<String> CACHE_EMBEDDED_CLUSTER_NAME = new OptionBuilder<>(CACHE_EMBEDDED_CLUSTER_NAME_PROPERTY, String.class)
+            .category(OptionCategory.CACHE)
+            .description("Name of the embedded Infinispan cluster. All nodes that belong to the same Keycloak deployment must share the same value; "
+                    + "nodes that belong to different deployments sharing the same database must each use a different value. "
+                    + "Defaults to 'ISPN' if not set. "
+                    + "WARNING: Using distinct cluster names without enabling the stateless feature disables cross-cluster cache invalidation, "
+                    + "which leads to stale caches and incorrect behavior. Use only together with '--features=stateless'.")
+            .build();
+
+    public static final Option<String> CACHE_EMBEDDED_NETWORK_BIND_ADDRESS = new OptionBuilder<>(CACHE_EMBEDDED_NETWORK_BIND_ADDRESS_PROPERTY, String.class)
+          .category(OptionCategory.CACHE)
+          .description("IP address used by clustering transport. By default, SITE_LOCAL is used.")
+          .build();
+
+    public static final Option<Integer> CACHE_EMBEDDED_NETWORK_BIND_PORT = new OptionBuilder<>(CACHE_EMBEDDED_NETWORK_BIND_PORT_PROPERTY, Integer.class)
+          .category(OptionCategory.CACHE)
+          .description("The Port the clustering transport will bind to. By default, port 7800 is used.")
+          .build();
+
+    public static final Option<String> CACHE_EMBEDDED_NETWORK_EXTERNAL_ADDRESS = new OptionBuilder<>(CACHE_EMBEDDED_NETWORK_EXTERNAL_ADDRESS_PROPERTY, String.class)
+          .category(OptionCategory.CACHE)
+          .description("IP address that other instances in the cluster should use to contact this node. Set only if it is " +
+                "different to %s, for example when this instance is behind a firewall.".formatted(CACHE_EMBEDDED_NETWORK_BIND_ADDRESS_PROPERTY))
+          .build();
+
+    public static final Option<Integer> CACHE_EMBEDDED_NETWORK_EXTERNAL_PORT = new OptionBuilder<>(CACHE_EMBEDDED_NETWORK_EXTERNAL_PORT_PROPERTY, Integer.class)
+          .category(OptionCategory.CACHE)
+          .description("Port that other instances in the cluster should use to contact this node. Set only if it is different " +
+                "to %s, for example when this instance is behind a firewall".formatted(CACHE_EMBEDDED_NETWORK_BIND_PORT_PROPERTY))
+          .build();
+
     public static final Option<String> CACHE_REMOTE_HOST = new OptionBuilder<>(CACHE_REMOTE_HOST_PROPERTY, String.class)
             .category(OptionCategory.CACHE)
-            .description(String.format("The hostname of the remote server for the remote store configuration. "
-                    + "It replaces the 'host' attribute of 'remote-server' tag of the configuration specified via XML file (see '%s' option.). "
-                    + "If the option is specified, '%s' and '%s' are required as well and the related configuration in XML file should not be present.",
-                    CACHE_CONFIG_FILE_PROPERTY, CACHE_REMOTE_USERNAME_PROPERTY, CACHE_REMOTE_PASSWORD_PROPERTY))
+            .description("The hostname of the external Infinispan cluster.")
             .build();
 
     public static final Option<Integer> CACHE_REMOTE_PORT = new OptionBuilder<>(CACHE_REMOTE_PORT_PROPERTY, Integer.class)
             .category(OptionCategory.CACHE)
-            .description(String.format("The port of the remote server for the remote store configuration. "
-                    + "It replaces the 'port' attribute of 'remote-server' tag of the configuration specified via XML file (see '%s' option.).",
-                    CACHE_CONFIG_FILE_PROPERTY))
+            .description("The port of the external Infinispan cluster.")
             .defaultValue(11222)
             .build();
 
     public static final Option<String> CACHE_REMOTE_USERNAME = new OptionBuilder<>(CACHE_REMOTE_USERNAME_PROPERTY, String.class)
             .category(OptionCategory.CACHE)
-            .description(String.format("The username for the authentication to the remote server for the remote store. "
-                    + "It replaces the 'username' attribute of 'digest' tag of the configuration specified via XML file (see '%s' option.). "
-                    + "If the option is specified, '%s' is required as well and the related configuration in XML file should not be present.",
-                    CACHE_CONFIG_FILE_PROPERTY, CACHE_REMOTE_PASSWORD_PROPERTY))
+            .description(String.format("The username for the authentication to the external Infinispan cluster. "
+                            + "It is optional if connecting to an unsecure external Infinispan cluster. "
+                            + "If the option is specified, '%s' is required as well.",
+                    CACHE_REMOTE_PASSWORD_PROPERTY))
             .build();
 
     public static final Option<String> CACHE_REMOTE_PASSWORD = new OptionBuilder<>(CACHE_REMOTE_PASSWORD_PROPERTY, String.class)
             .category(OptionCategory.CACHE)
-            .description(String.format("The password for the authentication to the remote server for the remote store. "
-                    + "It replaces the 'password' attribute of 'digest' tag of the configuration specified via XML file (see '%s' option.). "
-                    + "If the option is specified, '%s' is required as well and the related configuration in XML file should not be present.",
-                    CACHE_CONFIG_FILE_PROPERTY, CACHE_REMOTE_USERNAME_PROPERTY))
+            .description(String.format("The password for the authentication to the external Infinispan cluster. "
+                            + "It is optional if connecting to an unsecure external Infinispan cluster. "
+                            + "If the option is specified, '%s' is required as well.",
+                    CACHE_REMOTE_USERNAME_PROPERTY))
             .build();
 
     public static final Option<Boolean> CACHE_METRICS_HISTOGRAMS_ENABLED = new OptionBuilder<>(CACHE_METRICS_HISTOGRAMS_ENABLED_PROPERTY, Boolean.class)
@@ -132,4 +173,21 @@ public class CachingOptions {
             .description("Enable TLS support to communicate with a secured remote Infinispan server. Recommended to be enabled in production.")
             .defaultValue(Boolean.TRUE)
             .build();
+
+    public static final Option<List<String>> CACHE_REMOTE_BACKUP_SITES = OptionBuilder.listOptionBuilder(CACHE_REMOTE_BACKUP_SITES_PROPERTY, String.class)
+            .category(OptionCategory.CACHE)
+            .description("Configures a list of backup sites names to where the external Infinispan cluster backups the Keycloak data.")
+            .build();
+
+    public static Option<Integer> maxCountOption(String cache) {
+        return new OptionBuilder<>(cacheMaxCountProperty(cache), Integer.class)
+              .category(OptionCategory.CACHE)
+              .description(String.format("The maximum number of entries that can be stored in-memory by the %s cache.", cache))
+              .build();
+    }
+
+    public static String cacheMaxCountProperty(String cacheName) {
+        cacheName = CaseFormat.LOWER_CAMEL.to(CaseFormat.LOWER_HYPHEN, cacheName);
+        return String.format("%s-%s-max-count", CACHE_EMBEDDED_PREFIX, cacheName);
+    }
 }

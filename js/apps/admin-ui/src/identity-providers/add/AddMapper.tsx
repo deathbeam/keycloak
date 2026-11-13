@@ -1,7 +1,11 @@
+import type IdentityProviderRepresentation from "libs/keycloak-admin-client/lib/defs/identityProviderRepresentation";
 import type IdentityProviderMapperRepresentation from "@keycloak/keycloak-admin-client/lib/defs/identityProviderMapperRepresentation";
 import type { IdentityProviderMapperTypeRepresentation } from "@keycloak/keycloak-admin-client/lib/defs/identityProviderMapperTypeRepresentation";
 import type RoleRepresentation from "@keycloak/keycloak-admin-client/lib/defs/roleRepresentation";
+import { useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import {
+  FormGroup,
+  TextInput,
   ActionGroup,
   AlertVariant,
   Button,
@@ -13,18 +17,15 @@ import { useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
-import { TextControl } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
 import { DynamicComponents } from "../../components/dynamic/DynamicComponents";
 import { FormAccess } from "../../components/form/FormAccess";
 import type { AttributeForm } from "../../components/key-value-form/AttributeForm";
-import { KeycloakSpinner } from "../../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useRealm } from "../../context/realm-context/RealmContext";
 import { convertFormValuesToObject, convertToFormValues } from "../../util";
-import { useFetch } from "../../utils/useFetch";
 import useLocaleSort, { mapByKey } from "../../utils/useLocaleSort";
 import { useParams } from "../../utils/useParams";
 import {
@@ -33,6 +34,7 @@ import {
 } from "../routes/EditMapper";
 import { toIdentityProvider } from "../routes/IdentityProvider";
 import { AddMapperForm } from "./AddMapperForm";
+import { IdentityProviderContextProvider } from "../../context/identity-provider/IdentityProviderContext";
 
 export type IdPMapperRepresentationWithAttributes =
   IdentityProviderMapperRepresentation & AttributeForm;
@@ -46,9 +48,7 @@ export default function AddMapper() {
 
   const { t } = useTranslation();
 
-  const form = useForm<IdPMapperRepresentationWithAttributes>({
-    shouldUnregister: true,
-  });
+  const form = useForm<IdPMapperRepresentationWithAttributes>();
   const { handleSubmit } = form;
   const { addAlert, addError } = useAlerts();
   const navigate = useNavigate();
@@ -64,6 +64,8 @@ export default function AddMapper() {
 
   const [currentMapper, setCurrentMapper] =
     useState<IdentityProviderMapperTypeRepresentation>();
+
+  const [idp, setIdp] = useState<IdentityProviderRepresentation>();
 
   const save = async (idpMapper: IdentityProviderMapperRepresentation) => {
     const mapper = convertFormValuesToObject(idpMapper);
@@ -87,7 +89,7 @@ export default function AddMapper() {
         );
         addAlert(t("mapperSaveSuccess"), AlertVariant.success);
       } catch (error) {
-        addError(t("mapperSaveError"), error);
+        addError("mapperSaveError", error);
       }
     } else {
       try {
@@ -97,7 +99,7 @@ export default function AddMapper() {
         });
 
         addAlert(t("mapperCreateSuccess"), AlertVariant.success);
-        navigate(
+        void navigate(
           toIdentityProviderEditMapper({
             realm,
             alias,
@@ -106,7 +108,7 @@ export default function AddMapper() {
           }),
         );
       } catch (error) {
-        addError(t("mapperCreateError"), error);
+        addError("mapperCreateError", error);
       }
     }
   };
@@ -125,7 +127,7 @@ export default function AddMapper() {
           id: id!,
         });
         addAlert(t("deleteMapperSuccess"), AlertVariant.success);
-        navigate(
+        void navigate(
           toIdentityProvider({ providerId, alias, tab: "mappers", realm }),
         );
       } catch (error) {
@@ -139,8 +141,9 @@ export default function AddMapper() {
       Promise.all([
         id ? adminClient.identityProviders.findOneMapper({ alias, id }) : null,
         adminClient.identityProviders.findMapperTypes({ alias }),
+        adminClient.identityProviders.findOne({ alias }),
       ]),
-    ([mapper, mapperTypes]) => {
+    ([mapper, mapperTypes, idp]) => {
       const mappers = localeSort(Object.values(mapperTypes), mapByKey("name"));
       if (mapper) {
         setCurrentMapper(
@@ -152,6 +155,7 @@ export default function AddMapper() {
       }
 
       setMapperTypes(mappers);
+      setIdp(idp ?? undefined);
     },
     [id],
   );
@@ -199,14 +203,18 @@ export default function AddMapper() {
       >
         <FormProvider {...form}>
           {id && (
-            <TextControl
-              name="id"
-              label={t("id")}
-              readOnly
-              rules={{
-                required: t("required"),
-              }}
-            />
+            <>
+              <FormGroup label={t("id")} fieldId="id">
+                <TextInput name="id" readOnly value={id} />
+              </FormGroup>
+              <FormGroup label={t("name")} fieldId="name">
+                <TextInput
+                  name="name"
+                  readOnly
+                  value={form.getValues("name")}
+                />
+              </FormGroup>
+            </>
           )}
           {currentMapper.properties && (
             <>
@@ -217,8 +225,9 @@ export default function AddMapper() {
                 updateMapperType={setCurrentMapper}
                 mapperType={currentMapper}
               />
-
-              <DynamicComponents properties={currentMapper.properties!} />
+              <IdentityProviderContextProvider value={idp}>
+                <DynamicComponents properties={currentMapper.properties!} />
+              </IdentityProviderContextProvider>
             </>
           )}
         </FormProvider>

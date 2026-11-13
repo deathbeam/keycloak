@@ -17,11 +17,12 @@
 
 package org.keycloak.testsuite.pages;
 
-import org.jboss.arquillian.test.api.ArquillianResource;
-import org.junit.Assert;
 import org.keycloak.testsuite.util.DroneUtils;
-import org.keycloak.testsuite.util.OAuthClient;
+import org.keycloak.testsuite.util.UIUtils;
 import org.keycloak.testsuite.util.WaitUtils;
+import org.keycloak.testsuite.util.oauth.OAuthClient;
+
+import org.jboss.arquillian.test.api.ArquillianResource;
 import org.openqa.selenium.By;
 import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.WebElement;
@@ -47,6 +48,12 @@ public class LoginPage extends LanguageComboboxAwarePage {
     @FindBy(id = "password")
     private WebElement passwordInput;
 
+    @FindBy(id = "input-error-username")
+    private WebElement userNameInputError;
+
+    @FindBy(id = "input-error-password")
+    private WebElement passwordInputError;
+
     @FindBy(id = "input-error")
     private WebElement inputError;
 
@@ -65,17 +72,20 @@ public class LoginPage extends LanguageComboboxAwarePage {
     @FindBy(linkText = "Forgot Password?")
     private WebElement resetPasswordLink;
 
-    @FindBy(className = "alert-error")
+    @FindBy(className = "pf-m-danger")
     private WebElement loginErrorMessage;
 
-    @FindBy(className = "alert-success")
+    @FindBy(className = "pf-m-success")
     private WebElement loginSuccessMessage;
 
-    @FindBy(className = "alert-info")
+    @FindBy(className = "pf-m-info")
     private WebElement loginInfoMessage;
 
     @FindBy(className = "instruction")
     private WebElement instruction;
+
+    @FindBy(id = "kc-form-login")
+    private WebElement formLogin;
 
     public void login(String username, String password) {
         clearUsernameInputAndWaitIfNecessary();
@@ -84,13 +94,13 @@ public class LoginPage extends LanguageComboboxAwarePage {
         passwordInput.clear();
         passwordInput.sendKeys(password);
 
-        clickLink(submitButton);
+        clickSignIn();
     }
 
     public void loginUsername(String username) {
         clearUsernameInputAndWaitIfNecessary();
         usernameInput.sendKeys(username);
-        clickLink(submitButton);
+        clickSignIn();
     }
 
     private void clearUsernameInputAndWaitIfNecessary() {
@@ -108,6 +118,10 @@ public class LoginPage extends LanguageComboboxAwarePage {
         passwordInput.clear();
         passwordInput.sendKeys(password);
 
+        clickSignIn();
+    }
+
+    public void clickSignIn() {
         clickLink(submitButton);
     }
 
@@ -115,12 +129,12 @@ public class LoginPage extends LanguageComboboxAwarePage {
         clearUsernameInputAndWaitIfNecessary();
         usernameInput.sendKeys(username);
         passwordInput.clear();
-        clickLink(submitButton);
+        clickSignIn();
     }
 
     public void missingUsername() {
         clearUsernameInputAndWaitIfNecessary();
-        clickLink(submitButton);
+        clickSignIn();
     }
 
     public String getHtmlLanguage() {
@@ -135,8 +149,16 @@ public class LoginPage extends LanguageComboboxAwarePage {
         return usernameInput.isEnabled();
     }
 
+    public String getUsernameAutocomplete() {
+        return usernameInput.getDomAttribute("autocomplete");
+    }
+
     public boolean isUsernameInputPresent() {
         return !driver.findElements(By.id("username")).isEmpty();
+    }
+
+    public boolean isEmailInputPresent() {
+        return !driver.findElements(By.id("email")).isEmpty();
     }
 
     public boolean isRegisterLinkPresent() {
@@ -161,7 +183,31 @@ public class LoginPage extends LanguageComboboxAwarePage {
 
     public String getInputError() {
         try {
-            return getTextFromElement(inputError);
+            return getTextFromElement(userNameInputError);
+        } catch (NoSuchElementException ex) {
+            try {
+                return getTextFromElement(passwordInputError);
+            } catch (NoSuchElementException e) {
+                try {
+                    return getTextFromElement(inputError);
+                } catch (NoSuchElementException error) {
+                    return null;
+                }
+            }
+        }
+    }
+
+    public String getUsernameInputError() {
+        try {
+            return getTextFromElement(userNameInputError);
+        } catch (NoSuchElementException e) {
+            return null;
+        }
+    }
+
+    public String getPasswordInputError() {
+        try {
+            return getTextFromElement(passwordInputError);
         } catch (NoSuchElementException e) {
             return null;
         }
@@ -191,23 +237,13 @@ public class LoginPage extends LanguageComboboxAwarePage {
         }
     }
 
-    public boolean isCurrent() {
-        String realm = "test";
-        return isCurrent(realm);
-    }
-
-    public boolean isCurrent(String realm) {
-        return DroneUtils.getCurrentDriver().getTitle().equals("Sign in to " + realm) || DroneUtils.getCurrentDriver().getTitle().equals("Anmeldung bei " + realm);
-    }
-
-    public void assertCurrent(String realm) {
-        String name = getClass().getSimpleName();
-        Assert.assertTrue("Expected " + name + " but was " + DroneUtils.getCurrentDriver().getTitle() + " (" + DroneUtils.getCurrentDriver().getCurrentUrl() + ")",
-                isCurrent(realm));
+    @Override
+    public String getExpectedPageId() {
+        return "login-login";
     }
 
     public void clickRegister() {
-        registerLink.click();
+        clickLink(registerLink);
     }
 
     public void clickSocial(String alias) {
@@ -230,25 +266,14 @@ public class LoginPage extends LanguageComboboxAwarePage {
     }
 
     public void setRememberMe(boolean enable) {
-        boolean current = rememberMe.isSelected();
-        if (current != enable) {
-            rememberMe.click();
-        }
+        UIUtils.switchCheckbox(rememberMe, enable);
     }
 
     public boolean isRememberMeChecked() {
         return rememberMe.isSelected();
     }
 
-    @Override
-    public void open() {
-        oauth.openLoginForm();
-        assertCurrent();
-    }
-
-    public void open(String realm){
-        oauth.realm(realm);
-        oauth.openLoginForm();
-        assertCurrent(realm);
+    public String getFormUrl() {
+        return formLogin.getDomAttribute("action");
     }
 }

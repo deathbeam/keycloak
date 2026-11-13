@@ -17,11 +17,23 @@
 
 package org.keycloak.authorization.policy.provider.role;
 
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+
 import org.keycloak.Config;
 import org.keycloak.authorization.AuthorizationProvider;
 import org.keycloak.authorization.model.Policy;
 import org.keycloak.authorization.policy.provider.PolicyProvider;
 import org.keycloak.authorization.policy.provider.PolicyProviderFactory;
+import org.keycloak.authorization.policy.provider.util.PolicyValidationException;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
@@ -33,21 +45,12 @@ import org.keycloak.representations.idm.authorization.RolePolicyRepresentation.R
 import org.keycloak.util.JsonSerialization;
 import org.keycloak.utils.StringUtil;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashSet;
-import java.util.Map;
-import java.util.Set;
-import java.util.stream.Collectors;
-
 /**
  * @author <a href="mailto:psilva@redhat.com">Pedro Igor</a>
  */
 public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePolicyRepresentation> {
 
+    public static final String ID = "role";
     private RolePolicyProvider provider = new RolePolicyProvider(this::toRepresentation);
 
     @Override
@@ -142,13 +145,15 @@ public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePoli
     }
 
     private void updateRoles(Policy policy, RolePolicyRepresentation representation, AuthorizationProvider authorization) {
-        policy.putConfig("fetchRoles", String.valueOf(representation.isFetchRoles()));
+        if (representation.isFetchRoles() != null) {
+            policy.putConfig("fetchRoles", String.valueOf(representation.isFetchRoles()));
+        }
         updateRoles(policy, authorization, representation.getRoles());
     }
 
     private void updateRoles(Policy policy, AuthorizationProvider authorization, Set<RolePolicyRepresentation.RoleDefinition> roles) {
         Set<RolePolicyRepresentation.RoleDefinition> updatedRoles = new HashSet<>();
-
+        Set<String> processedRoles = new HashSet<>();
         if (roles != null) {
             RealmModel realm = authorization.getRealm();
             for (RolePolicyRepresentation.RoleDefinition definition : roles) {
@@ -157,8 +162,10 @@ public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePoli
                     continue;
                 }
 
+                if (!processedRoles.add(role.getId())) {
+                    throw new PolicyValidationException("Role can't be specified multiple times - " + role.getName());
+                }
                 definition.setId(role.getId());
-
                 updatedRoles.add(definition);
             }
         }
@@ -187,7 +194,7 @@ public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePoli
 
     @Override
     public String getId() {
-        return "role";
+        return ID;
     }
 
     private Set<RoleDefinition> getRoles(String rawRoles, RealmModel realm) {
@@ -205,6 +212,8 @@ public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePoli
         return Collections.emptySet();
     }
 
+    public static final Pattern UUID_PATTERN = Pattern.compile("[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}");
+
     private RoleModel getRole(RolePolicyRepresentation.RoleDefinition definition, RealmModel realm) {
         String roleName = definition.getId();
         String clientId = null;
@@ -218,10 +227,13 @@ public class RolePolicyProviderFactory implements PolicyProviderFactory<RolePoli
         RoleModel role;
 
         if (clientId == null) {
-            role = realm.getRole(roleName);
+            // if the role name looks like a UUID, it is likely that it is a role ID. Then do this look-up first to avoid hitting the database twice
+            // TODO: In a future version of the auth feature, make this more strict to avoid the double lookup and any ambiguity
+            boolean looksLikeAUuid = UUID_PATTERN.matcher(roleName).matches();
+            role = looksLikeAUuid ? realm.getRoleById(roleName) : realm.getRole(roleName);
 
             if (role == null) {
-                role = realm.getRoleById(roleName);
+                role = !looksLikeAUuid ? realm.getRoleById(roleName) : realm.getRole(roleName);;
             }
         } else {
             ClientModel client = realm.getClientByClientId(clientId);

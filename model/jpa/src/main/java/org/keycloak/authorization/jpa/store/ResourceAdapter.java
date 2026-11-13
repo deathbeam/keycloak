@@ -16,6 +16,18 @@
  */
 package org.keycloak.authorization.jpa.store;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.Query;
+
 import org.keycloak.authorization.jpa.entities.ResourceAttributeEntity;
 import org.keycloak.authorization.jpa.entities.ResourceEntity;
 import org.keycloak.authorization.jpa.entities.ScopeEntity;
@@ -25,20 +37,9 @@ import org.keycloak.authorization.model.ResourceServer;
 import org.keycloak.authorization.model.Scope;
 import org.keycloak.authorization.store.StoreFactory;
 import org.keycloak.common.util.MultivaluedHashMap;
+import org.keycloak.models.ModelValidationException;
 import org.keycloak.models.jpa.JpaModel;
 import org.keycloak.models.utils.KeycloakModelUtils;
-
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.Query;
-
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
 
 /**
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
@@ -206,18 +207,55 @@ public class ResourceAdapter extends AbstractAuthorizationModel implements Resou
         return Collections.unmodifiableList(values);
     }
 
+    private void checkAttribute(String name, String value) {
+        if (name == null) {
+            throw new ModelValidationException("Attribute name must not be null");
+        }
+        if (name.length() > ResourceAttributeEntity.NAME_MAX_LENGTH) {
+            throw new ModelValidationException("Attribute name must not exceed " + ResourceAttributeEntity.NAME_MAX_LENGTH + " characters");
+        }
+        if (value == null) {
+            throw new ModelValidationException("Attribute value must not be null");
+        }
+        if (value.length() > ResourceAttributeEntity.VALUE_MAX_LENGTH) {
+            throw new ModelValidationException("Attribute value must not exceed " + ResourceAttributeEntity.VALUE_MAX_LENGTH + " characters");
+        }
+    }
+
+    private void persistAttributeValue(String name, String value) {
+        checkAttribute(name, value);
+        ResourceAttributeEntity attr = new ResourceAttributeEntity();
+        attr.setId(KeycloakModelUtils.generateId());
+        attr.setName(name);
+        attr.setValue(value);
+        attr.setResource(entity);
+        em.persist(attr);
+        entity.getAttributes().add(attr);
+    }
+
     @Override
     public void setAttribute(String name, List<String> values) {
+        throwExceptionIfReadonly();
+
+        if (name == null) {
+            throw new ModelValidationException("Attribute name must not be null");
+        }
+        if (name.length() > ResourceAttributeEntity.NAME_MAX_LENGTH) {
+            throw new ModelValidationException("Attribute name must not exceed " + ResourceAttributeEntity.NAME_MAX_LENGTH + " characters");
+        }
+
+        if (values != null && !values.isEmpty()) {
+            for (String value : values) {
+                checkAttribute(name, value);
+            }
+        }
+
         removeAttribute(name);
 
-        for (String value : values) {
-            ResourceAttributeEntity attr = new ResourceAttributeEntity();
-            attr.setId(KeycloakModelUtils.generateId());
-            attr.setName(name);
-            attr.setValue(value);
-            attr.setResource(entity);
-            em.persist(attr);
-            entity.getAttributes().add(attr);
+        if (values != null) {
+            for (String value : values) {
+                persistAttributeValue(name, value);
+            }
         }
     }
 

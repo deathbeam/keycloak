@@ -17,33 +17,35 @@
 
 package org.keycloak.testsuite.arquillian;
 
+import java.io.File;
+import java.io.IOException;
+
+import org.keycloak.representations.adapters.config.AdapterConfig;
+import org.keycloak.testsuite.utils.io.IOUtil;
+import org.keycloak.util.JsonSerialization;
+
 import org.jboss.arquillian.container.test.spi.client.deployment.ApplicationArchiveProcessor;
 import org.jboss.arquillian.core.api.InstanceProducer;
 import org.jboss.arquillian.core.api.annotation.Inject;
 import org.jboss.arquillian.test.spi.TestClass;
 import org.jboss.arquillian.test.spi.annotation.ClassScoped;
+import org.jboss.logging.Logger;
 import org.jboss.shrinkwrap.api.Archive;
 import org.jboss.shrinkwrap.api.asset.StringAsset;
 import org.jboss.shrinkwrap.api.spec.WebArchive;
 import org.jboss.shrinkwrap.resolver.api.maven.Maven;
 import org.jboss.shrinkwrap.resolver.api.maven.MavenFormatStage;
 import org.jboss.shrinkwrap.resolver.api.maven.MavenResolverSystem;
-import org.keycloak.representations.adapters.config.AdapterConfig;
-import org.keycloak.testsuite.utils.io.IOUtil;
-import org.keycloak.util.JsonSerialization;
 import org.w3c.dom.Document;
 
-import java.io.File;
-import java.io.IOException;
-import org.jboss.logging.Logger;
 import static org.keycloak.testsuite.arquillian.AppServerTestEnricher.isRelative;
-import static org.keycloak.testsuite.arquillian.AppServerTestEnricher.isWLSAppServer;
 import static org.keycloak.testsuite.arquillian.AppServerTestEnricher.isWASAppServer;
+import static org.keycloak.testsuite.arquillian.AppServerTestEnricher.isWLSAppServer;
+import static org.keycloak.testsuite.util.ServerURLs.getAuthServerContextRoot;
 import static org.keycloak.testsuite.utils.io.IOUtil.documentToString;
 import static org.keycloak.testsuite.utils.io.IOUtil.loadJson;
 import static org.keycloak.testsuite.utils.io.IOUtil.loadXML;
 import static org.keycloak.testsuite.utils.io.IOUtil.modifyDocElementAttribute;
-import static org.keycloak.testsuite.util.ServerURLs.getAuthServerContextRoot;
 
 
 /**
@@ -128,12 +130,15 @@ public class DeploymentArchiveProcessor implements ApplicationArchiveProcessor {
                     modifyDocElementAttribute(doc, "SingleLogoutService", "redirectBindingUrl", "http", "https");
                     modifyDocElementAttribute(doc, "SP", "logoutPage", "8080", System.getProperty("app.server.https.port"));
                     modifyDocElementAttribute(doc, "SP", "logoutPage", "http", "https");
+                    modifyDocElementAttribute(doc, "IDP", "entityID", "8080", System.getProperty("auth.server.https.port"));
+                    modifyDocElementAttribute(doc, "IDP", "entityID", "http", "https");
                 } else {
                     modifyDocElementAttribute(doc, "SingleSignOnService", "bindingUrl", "8080", System.getProperty("auth.server.http.port"));
                     modifyDocElementAttribute(doc, "SingleSignOnService", "assertionConsumerServiceUrl", "8080", System.getProperty("app.server.http.port"));
                     modifyDocElementAttribute(doc, "SingleLogoutService", "postBindingUrl", "8080", System.getProperty("auth.server.http.port"));
                     modifyDocElementAttribute(doc, "SingleLogoutService", "redirectBindingUrl", "8080", System.getProperty("auth.server.http.port"));
                     modifyDocElementAttribute(doc, "SP", "logoutPage", "8080", System.getProperty("app.server.http.port"));
+                    modifyDocElementAttribute(doc, "IDP", "entityID", "8080", System.getProperty("auth.server.http.port"));
                 }
 
                 archive.add(new StringAsset(IOUtil.documentToString(doc)), adapterConfigPath);

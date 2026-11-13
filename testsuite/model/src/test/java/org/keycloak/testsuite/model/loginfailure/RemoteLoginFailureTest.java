@@ -20,10 +20,6 @@ package org.keycloak.testsuite.model.loginfailure;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import org.infinispan.client.hotrod.RemoteCache;
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Test;
 import org.keycloak.connections.infinispan.InfinispanConnectionProvider;
 import org.keycloak.infinispan.util.InfinispanUtils;
 import org.keycloak.models.Constants;
@@ -36,6 +32,11 @@ import org.keycloak.models.sessions.infinispan.entities.LoginFailureEntity;
 import org.keycloak.models.sessions.infinispan.entities.LoginFailureKey;
 import org.keycloak.testsuite.model.KeycloakModelTest;
 import org.keycloak.testsuite.model.RequireProvider;
+
+import org.infinispan.client.hotrod.RemoteCache;
+import org.junit.Assert;
+import org.junit.Assume;
+import org.junit.Test;
 
 @RequireProvider(UserLoginFailureProvider.class)
 @RequireProvider(UserProvider.class)
@@ -50,6 +51,7 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
     @Override
     public void createEnvironment(KeycloakSession session) {
         RealmModel realm = createRealm(session, "remote-login-failure-test");
+        session.getContext().setRealm(realm);
         realm.setDefaultRole(session.roles().addRealmRole(realm, Constants.DEFAULT_ROLES_ROLE_PREFIX + "-" + realm.getName()));
         realmId = realm.getId();
 
@@ -66,6 +68,8 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
 
     @Override
     public void cleanEnvironment(KeycloakSession s) {
+        RealmModel realm = s.realms().getRealm(realmId);
+        s.getContext().setRealm(realm);
         s.realms().removeRealm(realmId);
     }
 
@@ -76,6 +80,7 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
 
         inComittedTransaction(session -> {
             var realm = session.realms().getRealm(realmId);
+            session.getContext().setRealm(realm);
             var loginFailures = session.loginFailures().addUserLoginFailure(realm, userIds.get(0));
             loginFailures.incrementFailures();
         });
@@ -100,6 +105,7 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
 
         inComittedTransaction(session -> {
             var realm = session.realms().getRealm(realmId);
+            session.getContext().setRealm(realm);
             var loginFailures = session.loginFailures().getUserLoginFailure(realm, userIds.get(0));
 
             // update all fields
@@ -130,6 +136,7 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
 
         inComittedTransaction(session -> {
             var realm = session.realms().getRealm(realmId);
+            session.getContext().setRealm(realm);
             var loginFailures = session.loginFailures().getUserLoginFailure(realm, userIds.get(0));
 
             // update all fields
@@ -162,6 +169,7 @@ public class RemoteLoginFailureTest extends KeycloakModelTest {
 
         inComittedTransaction(session -> {
             var realm = session.realms().getRealm(realmId);
+            session.getContext().setRealm(realm);
             var loginFailures = session.loginFailures().getUserLoginFailure(realm, userIds.get(0));
             loginFailures.incrementTemporaryLockouts();
             loginFailures.clearFailures();

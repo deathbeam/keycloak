@@ -1,5 +1,6 @@
 import ComponentRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentRepresentation";
 import ComponentTypeRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentTypeRepresentation";
+import { TextControl, useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
   Button,
@@ -11,16 +12,13 @@ import { useState } from "react";
 import { FormProvider, useForm, useWatch } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
-import { TextControl } from "@keycloak/keycloak-ui-shared";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
 import { DynamicComponents } from "../../components/dynamic/DynamicComponents";
 import { FormAccess } from "../../components/form/FormAccess";
-import { KeycloakSpinner } from "../../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useRealm } from "../../context/realm-context/RealmContext";
-import { useFetch } from "../../utils/useFetch";
 import { useParams } from "../../utils/useParams";
 import {
   RegistrationProviderParams,
@@ -68,7 +66,7 @@ export default function DetailProvider() {
       const updatedComponent = {
         ...component,
         subType: subTab,
-        parentId: realmRepresentation?.id,
+        parentId: realmRepresentation.id,
         providerType:
           "org.keycloak.services.clientregistration.policy.ClientRegistrationPolicy",
         providerId,
@@ -77,7 +75,9 @@ export default function DetailProvider() {
         await adminClient.components.update({ id }, updatedComponent);
       } else {
         const { id } = await adminClient.components.create(updatedComponent);
-        navigate(toRegistrationProvider({ id, realm, subTab, providerId }));
+        void navigate(
+          toRegistrationProvider({ id, realm, subTab, providerId }),
+        );
       }
       addAlert(t(`provider${id ? "Updated" : "Create"}Success`));
     } catch (error) {
@@ -99,7 +99,7 @@ export default function DetailProvider() {
           id: id!,
         });
         addAlert(t("clientRegisterPolicyDeleteSuccess"));
-        navigate(toClientRegistration({ realm, subTab }));
+        void navigate(toClientRegistration({ realm, subTab }));
       } catch (error) {
         addError("clientRegisterPolicyDeleteError", error);
       }
@@ -150,6 +150,7 @@ export default function DetailProvider() {
                 {t("save")}
               </Button>
               <Button
+                data-testid="cancel"
                 variant="link"
                 component={(props) => (
                   <Link

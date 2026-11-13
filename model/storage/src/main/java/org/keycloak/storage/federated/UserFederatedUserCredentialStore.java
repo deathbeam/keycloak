@@ -16,11 +16,11 @@
  */
 package org.keycloak.storage.federated;
 
+import java.util.stream.Stream;
+
 import org.keycloak.credential.CredentialModel;
 import org.keycloak.models.RealmModel;
 import org.keycloak.provider.Provider;
-
-import java.util.stream.Stream;
 
 /**
  * @author <a href="mailto:bill@burkecentral.com">Bill Burke</a>
@@ -28,6 +28,20 @@ import java.util.stream.Stream;
  */
 public interface UserFederatedUserCredentialStore extends Provider {
     void updateCredential(RealmModel realm, String userId, CredentialModel cred);
+
+    /**
+     * Replaces a stored credential with a new version, but only if it still has the content of the old version.
+     * <p>
+     * Implementations must make the check and the replacement atomic, for example by locking the stored credential.
+     *
+     * @param realm the realm
+     * @param userId the user id
+     * @param oldCred the credential as it was read, identified by its id
+     * @param newCred the credential to store instead
+     * @return {@code true} if the credential was replaced, {@code false} if it was changed or removed in the meantime
+     */
+    boolean updateCredential(RealmModel realm, String userId, CredentialModel oldCred, CredentialModel newCred);
+
     CredentialModel createCredential(RealmModel realm, String userId, CredentialModel cred);
     boolean removeStoredCredential(RealmModel realm, String userId, String id);
     CredentialModel getStoredCredentialById(RealmModel realm, String userId, String id);

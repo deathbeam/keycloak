@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Objects;
 import java.util.function.Consumer;
 
-import org.infinispan.client.hotrod.MetadataValue;
+import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserLoginFailureModel;
 import org.keycloak.models.sessions.infinispan.changes.remote.updater.BaseUpdater;
 import org.keycloak.models.sessions.infinispan.changes.remote.updater.Expiration;
@@ -29,6 +29,7 @@ import org.keycloak.models.sessions.infinispan.changes.remote.updater.Updater;
 import org.keycloak.models.sessions.infinispan.entities.LoginFailureEntity;
 import org.keycloak.models.sessions.infinispan.entities.LoginFailureKey;
 import org.keycloak.models.sessions.infinispan.util.SessionTimeouts;
+import org.keycloak.utils.KeycloakSessionUtil;
 
 /**
  * Implementation of {@link Updater} and {@link UserLoginFailureModel}.
@@ -50,22 +51,23 @@ public class LoginFailuresUpdater extends BaseUpdater<LoginFailureKey, LoginFail
     }
 
     public static LoginFailuresUpdater create(LoginFailureKey key, LoginFailureEntity entity) {
-        return new LoginFailuresUpdater(Objects.requireNonNull(key), Objects.requireNonNull(entity), -1, UpdaterState.CREATED);
+        return new LoginFailuresUpdater(key, Objects.requireNonNull(entity), NO_VERSION, UpdaterState.CREATED);
     }
 
-    public static LoginFailuresUpdater wrap(LoginFailureKey key, MetadataValue<LoginFailureEntity> entity) {
-        return new LoginFailuresUpdater(Objects.requireNonNull(key), Objects.requireNonNull(entity.getValue()), entity.getVersion(), UpdaterState.READ);
+    public static LoginFailuresUpdater wrap(LoginFailureKey key, LoginFailureEntity value, long version) {
+        return new LoginFailuresUpdater(key, Objects.requireNonNull(value), version, UpdaterState.READ);
     }
 
     public static LoginFailuresUpdater delete(LoginFailureKey key) {
-        return new LoginFailuresUpdater(Objects.requireNonNull(key), null, -1, UpdaterState.DELETED);
+        return new LoginFailuresUpdater(key, null, NO_VERSION, UpdaterState.DELETED);
     }
 
     @Override
     public Expiration computeExpiration() {
+        RealmModel realm = KeycloakSessionUtil.getKeycloakSession().getContext().getRealm();
         return new Expiration(
-                SessionTimeouts.getLoginFailuresMaxIdleMs(null, null, getValue()),
-                SessionTimeouts.getLoginFailuresLifespanMs(null, null, getValue()));
+                SessionTimeouts.getLoginFailuresMaxIdleMs(realm, null, getValue()),
+                SessionTimeouts.getLoginFailuresLifespanMs(realm, null, getValue()));
     }
 
     @Override
@@ -148,6 +150,22 @@ public class LoginFailuresUpdater extends BaseUpdater<LoginFailureKey, LoginFail
     }
 
     @Override
+    public int getNumSecondaryAuthFailures() {
+        return getValue().getNumSecondaryAuthFailures();
+    }
+
+    @Override
+    public void incrementSecondaryAuthFailures() {
+        addAndApplyChange(INCREMENT_SECONDARY_AUTH_FAILURES);
+    }
+
+    @Override
+    public void clearPrimaryAndSecondaryAuthFailures() {
+        changes.clear();
+        addAndApplyChange(CLEAR_PRIMARY_AND_SECONDARY_AUTH_FAILURES);
+    }
+
+    @Override
     protected boolean isUnchanged() {
         return changes.isEmpty();
     }
@@ -158,6 +176,8 @@ public class LoginFailuresUpdater extends BaseUpdater<LoginFailureKey, LoginFail
     }
 
     private static final Consumer<LoginFailureEntity> CLEAR = LoginFailureEntity::clearFailures;
+    private static final Consumer<LoginFailureEntity> CLEAR_PRIMARY_AND_SECONDARY_AUTH_FAILURES = LoginFailureEntity::clearPrimaryAndSecondaryAuthFailures;
     private static final Consumer<LoginFailureEntity> INCREMENT_FAILURES = e -> e.setNumFailures(e.getNumFailures() + 1);
+    private static final Consumer<LoginFailureEntity> INCREMENT_SECONDARY_AUTH_FAILURES = e -> e.setNumSecondaryAuthFailures(e.getNumSecondaryAuthFailures() + 1);
     private static final Consumer<LoginFailureEntity> INCREMENT_LOCK_OUTS = e -> e.setNumTemporaryLockouts(e.getNumTemporaryLockouts() + 1);
 }

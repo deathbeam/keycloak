@@ -19,10 +19,10 @@
 package org.keycloak.services.clienttype;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.Collections;
 import java.util.List;
 
-import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.client.clienttype.ClientTypeException;
 import org.keycloak.client.clienttype.ClientTypeManager;
@@ -33,6 +33,8 @@ import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.representations.idm.ClientTypeRepresentation;
 import org.keycloak.representations.idm.ClientTypesRepresentation;
 import org.keycloak.util.JsonSerialization;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -79,8 +81,8 @@ public class DefaultClientTypeManagerFactory implements ClientTypeManagerFactory
                 if (globalClientTypes == null) {
                     logger.info("Loading global client types");
 
-                    try {
-                        ClientTypesRepresentation globalTypesRep  = JsonSerialization.readValue(getClass().getResourceAsStream("/keycloak-default-client-types.json"), ClientTypesRepresentation.class);
+                    try (InputStream is = getClass().getResourceAsStream("/keycloak-default-client-types.json")) {
+                        ClientTypesRepresentation globalTypesRep  = JsonSerialization.readValue(is, ClientTypesRepresentation.class);
                         this.globalClientTypes = DefaultClientTypeManager.validateAndCastConfiguration(session, globalTypesRep.getRealmClientTypes(), Collections.emptyList());
                     } catch (IOException e) {
                         logger.error("Failed to deserialize global proposed client types from JSON.");

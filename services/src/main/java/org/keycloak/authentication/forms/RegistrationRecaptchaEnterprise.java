@@ -20,9 +20,18 @@
 package org.keycloak.authentication.forms;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
+
+import org.keycloak.authentication.ValidationContext;
+import org.keycloak.connections.httpclient.HttpClientProvider;
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.provider.ProviderConfigurationBuilder;
+import org.keycloak.services.ServicesLogger;
+import org.keycloak.util.JsonSerialization;
+import org.keycloak.utils.StringUtil;
 
 import org.apache.http.HttpResponse;
 import org.apache.http.HttpStatus;
@@ -31,13 +40,6 @@ import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.util.EntityUtils;
 import org.jboss.logging.Logger;
-import org.keycloak.authentication.ValidationContext;
-import org.keycloak.connections.httpclient.HttpClientProvider;
-import org.keycloak.provider.ProviderConfigProperty;
-import org.keycloak.provider.ProviderConfigurationBuilder;
-import org.keycloak.services.ServicesLogger;
-import org.keycloak.util.JsonSerialization;
-import org.keycloak.utils.StringUtil;
 
 public class RegistrationRecaptchaEnterprise extends AbstractRegistrationRecaptcha {
     public static final String PROVIDER_ID = "registration-recaptcha-enterprise";
@@ -91,8 +93,10 @@ public class RegistrationRecaptchaEnterprise extends AbstractRegistrationRecaptc
                 throw new Exception(response.getStatusLine().getReasonPhrase());
             }
 
-            RecaptchaAssessmentResponse assessment = JsonSerialization.readValue(
-                    response.getEntity().getContent(), RecaptchaAssessmentResponse.class);
+            RecaptchaAssessmentResponse assessment;
+            try (InputStream content = response.getEntity().getContent()) {
+                assessment = JsonSerialization.readValue(content, RecaptchaAssessmentResponse.class);
+            }
             LOGGER.tracef("Got assessment response: %s", assessment);
 
             String tokenAction = assessment.getTokenProperties().getAction();

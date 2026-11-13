@@ -19,23 +19,23 @@ package org.keycloak.executors;
 
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-
 import javax.naming.InitialContext;
 import javax.naming.NameNotFoundException;
 import javax.naming.NamingException;
 
-import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -46,6 +46,8 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
 
     private static final int DEFAULT_MIN_THREADS = 4;
     private static final int DEFAULT_MAX_THREADS = 64;
+    // tasks not listed here keep an unbounded queue
+    private static final Map<String, Integer> DEFAULT_QUEUE_SIZES = Map.of(ExecutorsProvider.EMAIL, 128);
 
     private static final String MANAGED_EXECUTORS_SERVICE_JNDI_PREFIX = "java:jboss/ee/concurrency/executor/";
 
@@ -65,7 +67,7 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
 
             @Override
             public ExecutorService getExecutor(String taskType) {
-                return DefaultExecutorsProviderFactory.this.getExecutor(taskType, session);
+                return DefaultExecutorsProviderFactory.this.getExecutor(taskType);
             }
 
             @Override
@@ -103,13 +105,13 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
 
     // IMPL
 
-    protected ExecutorService getExecutor(String taskType, KeycloakSession session) {
+    protected ExecutorService getExecutor(String taskType) {
         ExecutorService existing = executors.get(taskType);
 
         if (existing == null) {
             synchronized (this) {
                 if (!executors.containsKey(taskType)) {
-                    ExecutorService executor = retrievePool(taskType, session);
+                    ExecutorService executor = retrievePool(taskType);
                     executors.put(taskType, executor);
                 }
 
@@ -121,15 +123,15 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
     }
 
 
-    protected ExecutorService retrievePool(String taskType, KeycloakSession session) {
+    protected ExecutorService retrievePool(String taskType) {
         if (managed == null) {
             detectManaged();
         }
 
         if (managed) {
-            return getPoolManaged(taskType, session);
+            return getPoolManaged(taskType);
         } else {
-            return createPoolEmbedded(taskType, session);
+            return createPoolEmbedded(taskType);
         }
     }
 
@@ -146,7 +148,7 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
     }
 
 
-    protected ExecutorService getPoolManaged(String taskType, KeycloakSession session) {
+    protected ExecutorService getPoolManaged(String taskType) {
         try {
             InitialContext ctx = new InitialContext();
 
@@ -169,33 +171,38 @@ public class DefaultExecutorsProviderFactory implements ExecutorsProviderFactory
     }
 
 
-    protected ExecutorService createPoolEmbedded(String taskType, KeycloakSession session) {
+    protected ExecutorService createPoolEmbedded(String taskType) {
         Config.Scope currentScope = config.scope(taskType);
         int min = DEFAULT_MIN_THREADS;
         int max = DEFAULT_MAX_THREADS;
+        int queue = DEFAULT_QUEUE_SIZES.getOrDefault(taskType, 0);
 
         if (currentScope != null) {
-            min = currentScope.getInt("min", DEFAULT_MIN_THREADS);
-            max = currentScope.getInt("max", DEFAULT_MAX_THREADS);
+            // On Quarkus the options are named like spi-executors--default--email-min. The nested scope is kept as a fallback
+            min = config.getInt(taskType + "-min", currentScope.getInt("min", DEFAULT_MIN_THREADS));
+            max = config.getInt(taskType + "-max", currentScope.getInt("max", DEFAULT_MAX_THREADS));
+            queue = config.getInt(taskType + "-queue", currentScope.getInt("queue", queue));
         }
 
-        logger.debugf("Creating pool for task '%s': min=%d, max=%d", taskType, min, max);
+        logger.debugf("Creating pool for task '%s': min=%d, max=%d, queue=%d", taskType, min, max, queue);
 
-        ThreadFactory threadFactory = createThreadFactory(taskType, session);
+        ThreadFactory threadFactory = createThreadFactory(taskType);
+        BlockingQueue<Runnable> workQueue = queue > 0 ? new LinkedBlockingQueue<>(queue) : new LinkedBlockingQueue<>();
 
         if (min == max) {
-            return Executors.newFixedThreadPool(min, threadFactory);
+            // Same like Executors.newFixedThreadPool. Besides that the queue size is configurable
+            return new ThreadPoolExecutor(min, max, 0L, TimeUnit.MILLISECONDS, workQueue, threadFactory);
         } else {
-            // Same like Executors.newCachedThreadPool. Besides that "min" and "max" are configurable
+            // Same like Executors.newCachedThreadPool. Besides that "min", "max" and the queue size are configurable
             return new ThreadPoolExecutor(min, max,
                     60L, TimeUnit.SECONDS,
-                    new LinkedBlockingQueue<>(),
+                    workQueue,
                     threadFactory);
         }
     }
 
 
-    protected ThreadFactory createThreadFactory(String taskType, KeycloakSession session) {
+    protected ThreadFactory createThreadFactory(String taskType) {
         return new ThreadFactory() {
 
             private AtomicInteger i = new AtomicInteger(0);

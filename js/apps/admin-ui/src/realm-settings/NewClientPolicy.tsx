@@ -3,7 +3,10 @@ import type ClientProfileRepresentation from "@keycloak/keycloak-admin-client/li
 import {
   HelpItem,
   KeycloakTextArea,
+  SelectControl,
   TextControl,
+  useAlerts,
+  useFetch,
 } from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
@@ -31,14 +34,12 @@ import { Controller, FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
 import { FormAccess } from "../components/form/FormAccess";
-import { KeycloakSpinner } from "../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
 import { ViewHeader } from "../components/view-header/ViewHeader";
 import { useRealm } from "../context/realm-context/RealmContext";
 import { useServerInfo } from "../context/server-info/ServerInfoProvider";
-import { useFetch } from "../utils/useFetch";
 import { useParams } from "../utils/useParams";
 import { AddClientProfileModal } from "./AddClientProfileModal";
 import { toNewClientPolicyCondition } from "./routes/AddCondition";
@@ -57,10 +58,13 @@ type FormFields = Required<ClientPolicyRepresentation>;
 const defaultValues: FormFields = {
   name: "",
   description: "",
+  mode: "DEFAULT",
   conditions: [],
   enabled: true,
   profiles: [],
 };
+
+const CLIENT_POLICY_MODES = ["DEFAULT", "STRICT"];
 
 type PolicyDetailAttributes = {
   idx: number;
@@ -175,8 +179,11 @@ export default function NewClientPolicy() {
 
   const save = async () => {
     const createdForm = form.getValues();
+    const existingPolicy = policies?.find((p) => p.name === policyName);
     const createdPolicy = {
       ...createdForm,
+      conditions: existingPolicy?.conditions ?? [],
+      profiles: existingPolicy?.profiles ?? [],
     };
 
     const getAllPolicies = () => {
@@ -188,17 +195,18 @@ export default function NewClientPolicy() {
         return policies?.map((policy) =>
           policy.name === createdPolicy.name ? createdPolicy : policy,
         );
-      } else if (createdForm.name !== policyName) {
+      } else if (createdPolicy.name !== policyName) {
         return policies
           ?.filter((item) => item.name !== policyName)
-          .concat(createdForm);
+          .concat(createdPolicy);
       }
-      return policies?.concat(createdForm);
+      return policies?.concat(createdPolicy);
     };
 
     try {
+      const updatedPolicies = getAllPolicies();
       await adminClient.clientPolicies.updatePolicy({
-        policies: getAllPolicies(),
+        policies: updatedPolicies,
       });
       addAlert(
         policyName
@@ -206,7 +214,12 @@ export default function NewClientPolicy() {
           : t("createClientPolicySuccess"),
         AlertVariant.success,
       );
-      navigate(toEditClientPolicy({ realm, policyName: createdForm.name! }));
+      setPolicies(updatedPolicies ?? []);
+      setAllPolicies([...(globalPolicies ?? []), ...(updatedPolicies ?? [])]);
+      setCurrentPolicy(createdPolicy);
+      void navigate(
+        toEditClientPolicy({ realm, policyName: createdPolicy.name! }),
+      );
       setShowAddConditionsAndProfilesForm(true);
     } catch (error) {
       addError("createClientPolicyError", error);
@@ -230,14 +243,14 @@ export default function NewClientPolicy() {
           policies: updatedPolicies,
         });
         addAlert(t("deleteClientPolicySuccess"), AlertVariant.success);
-        navigate(
+        void navigate(
           toClientPolicies({
             realm,
             tab: "policies",
           }),
         );
       } catch (error) {
-        addError(t("deleteClientPolicyError"), error);
+        addError("deleteClientPolicyError", error);
       }
     },
   });
@@ -258,11 +271,11 @@ export default function NewClientPolicy() {
               policies: policies,
             });
             addAlert(t("deleteConditionSuccess"), AlertVariant.success);
-            navigate(
+            void navigate(
               toEditClientPolicy({ realm, policyName: formValues.name! }),
             );
           } catch (error) {
-            addError(t("deleteConditionError"), error);
+            addError("deleteConditionError", error);
           }
         } else {
           const updatedPolicies = policies?.filter(
@@ -274,14 +287,14 @@ export default function NewClientPolicy() {
               policies: updatedPolicies,
             });
             addAlert(t("deleteClientSuccess"), AlertVariant.success);
-            navigate(
+            void navigate(
               toClientPolicies({
                 realm,
                 tab: "policies",
               }),
             );
           } catch (error) {
-            addError(t("deleteClientError"), error);
+            addError("deleteClientError", error);
           }
         }
       },
@@ -304,9 +317,11 @@ export default function NewClientPolicy() {
           });
           addAlert(t("deleteClientPolicyProfileSuccess"), AlertVariant.success);
           form.setValue("profiles", currentPolicy?.profiles || []);
-          navigate(toEditClientPolicy({ realm, policyName: formValues.name! }));
+          void navigate(
+            toEditClientPolicy({ realm, policyName: formValues.name! }),
+          );
         } catch (error) {
-          addError(t("deleteClientPolicyProfileError"), error);
+          addError("deleteClientPolicyProfileError", error);
         }
       } else {
         const updatedPolicies = policies?.filter(
@@ -318,14 +333,14 @@ export default function NewClientPolicy() {
             policies: updatedPolicies,
           });
           addAlert(t("deleteClientSuccess"), AlertVariant.success);
-          navigate(
+          void navigate(
             toClientPolicies({
               realm,
               tab: "policies",
             }),
           );
         } catch (error) {
-          addError(t("deleteClientError"), error);
+          addError("deleteClientError", error);
         }
       }
     },
@@ -338,6 +353,10 @@ export default function NewClientPolicy() {
 
     if (currentPolicy?.description !== undefined) {
       form.setValue("description", currentPolicy.description);
+    }
+
+    if (currentPolicy?.mode !== undefined) {
+      form.setValue("mode", currentPolicy.mode);
     }
   };
 
@@ -375,7 +394,9 @@ export default function NewClientPolicy() {
       setAllPolicies(allClientPolicies);
       setCurrentPolicy(createdPolicy);
       form.setValue("profiles", createdPolicy.profiles);
-      navigate(toEditClientPolicy({ realm, policyName: formValues.name! }));
+      void navigate(
+        toEditClientPolicy({ realm, policyName: formValues.name! }),
+      );
       addAlert(t("addClientProfileSuccess"), AlertVariant.success);
     } catch (error) {
       addError("addClientProfileError", error);
@@ -386,9 +407,9 @@ export default function NewClientPolicy() {
     titleKey: "disablePolicyConfirmTitle",
     messageKey: "disablePolicyConfirm",
     continueButtonLabel: "disable",
-    onConfirm: () => {
+    onConfirm: async () => {
       form.setValue("enabled", !form.getValues().enabled);
-      save();
+      await save();
     },
   });
 
@@ -401,8 +422,8 @@ export default function NewClientPolicy() {
       <DeleteConditionConfirm />
       <DeleteProfileConfirm />
       <AddClientProfileModal
-        onConfirm={(profiles: ClientProfileRepresentation[]) => {
-          addProfiles(profiles.map((item) => item.name!));
+        onConfirm={async (profiles: ClientProfileRepresentation[]) => {
+          await addProfiles(profiles.map((item) => item.name!));
         }}
         allProfiles={policyProfiles}
         open={profilesModalOpen}
@@ -452,12 +473,12 @@ export default function NewClientPolicy() {
               }
               isReadOnly={isGlobalPolicy}
               isEnabled={field.value}
-              onToggle={(value) => {
+              onToggle={async (value) => {
                 if (!value) {
                   toggleDisableDialog();
                 } else {
                   field.onChange(value);
-                  save();
+                  await save();
                 }
               }}
             />
@@ -476,10 +497,13 @@ export default function NewClientPolicy() {
               name="name"
               label={t("name")}
               rules={{
-                required: { value: true, message: t("required") },
+                required: t("required"),
                 validate: (value) =>
-                  policies.some((policy) => policy.name === value)
-                    ? t("createClientProfileNameHelperText").toString()
+                  policies.some(
+                    (policy) =>
+                      policy.name === value && policy.name !== policyName,
+                  )
+                    ? t("createClientProfileNameHelperText")
                     : true,
               }}
             />
@@ -491,6 +515,15 @@ export default function NewClientPolicy() {
                 {...form.register("description")}
               />
             </FormGroup>
+            <SelectControl
+              name="mode"
+              label={t("mode")}
+              labelIcon={t("clientPolicyModeHelp")}
+              controller={{
+                defaultValue: "DEFAULT",
+              }}
+              options={CLIENT_POLICY_MODES}
+            />
             <ActionGroup>
               <Button
                 variant="primary"
@@ -507,7 +540,7 @@ export default function NewClientPolicy() {
                   (showAddConditionsAndProfilesForm || policyName) &&
                   !isGlobalPolicy
                     ? reset()
-                    : navigate(
+                    : void navigate(
                         toClientPolicies({
                           realm,
                           tab: "policies",
@@ -632,6 +665,7 @@ export default function NewClientPolicy() {
                   <>
                     <Divider />
                     <Text
+                      data-testid="no-conditions"
                       className="kc-emptyConditions"
                       component={TextVariants.h2}
                     >

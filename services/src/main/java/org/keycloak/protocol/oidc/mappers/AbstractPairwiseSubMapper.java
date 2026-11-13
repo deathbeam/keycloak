@@ -1,11 +1,15 @@
 package org.keycloak.protocol.oidc.mappers;
 
+import java.util.LinkedList;
+import java.util.List;
+
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.ClientSessionContext;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ProtocolMapperContainerModel;
 import org.keycloak.models.ProtocolMapperModel;
 import org.keycloak.models.RealmModel;
+import org.keycloak.models.UserModel;
 import org.keycloak.models.UserSessionModel;
 import org.keycloak.protocol.ProtocolMapperConfigException;
 import org.keycloak.protocol.oidc.utils.PairwiseSubMapperUtils;
@@ -13,20 +17,24 @@ import org.keycloak.protocol.oidc.utils.PairwiseSubMapperValidator;
 import org.keycloak.provider.ProviderConfigProperty;
 import org.keycloak.representations.AccessToken;
 import org.keycloak.representations.IDToken;
+import org.keycloak.representations.LogoutToken;
 
-import java.util.ArrayList;
-import java.util.LinkedList;
-import java.util.List;
 
 /**
  * Set the 'sub' claim to pairwise .
  *
  * @author <a href="mailto:martin.hardselius@gmail.com">Martin Hardselius</a>
  */
-public abstract class AbstractPairwiseSubMapper extends AbstractOIDCProtocolMapper implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper, TokenIntrospectionTokenMapper {
+public abstract class AbstractPairwiseSubMapper extends AbstractOIDCProtocolMapper implements OIDCAccessTokenMapper, OIDCIDTokenMapper, UserInfoTokenMapper, TokenIntrospectionTokenMapper, LogoutTokenMapper {
     public static final String PROVIDER_ID_SUFFIX = "-pairwise-sub-mapper";
 
     public abstract String getIdPrefix();
+
+    public String generateSub(ProtocolMapperModel mappingModel, ClientModel client, UserModel user) {
+        String sectorIdentifier = getSectorIdentifier(client, mappingModel);
+        return generateSub(mappingModel, sectorIdentifier, user.getId());
+    }
+
 
     /**
      * Generates a pairwise subject identifier.
@@ -36,7 +44,7 @@ public abstract class AbstractPairwiseSubMapper extends AbstractOIDCProtocolMapp
      * @param localSub         local subject identifier (user id)
      * @return A pairwise subject identifier
      */
-    public abstract String generateSub(ProtocolMapperModel mappingModel, String sectorIdentifier, String localSub);
+    protected abstract String generateSub(ProtocolMapperModel mappingModel, String sectorIdentifier, String localSub);
 
     /**
      * Override to add additional provider configuration properties. By default, a pairwise sub mapper will only contain configuration for a sector identifier URI.
@@ -66,25 +74,30 @@ public abstract class AbstractPairwiseSubMapper extends AbstractOIDCProtocolMapp
 
     @Override
     public IDToken transformIDToken(IDToken token, ProtocolMapperModel mappingModel, KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
-        setIDTokenSubject(token, generateSub(mappingModel, getSectorIdentifier(clientSessionCtx.getClientSession().getClient(), mappingModel), userSession.getUser().getId()));
+        setIDTokenSubject(token, generateSub(mappingModel, clientSessionCtx.getClientSession().getClient(), userSession.getUser()));
         return token;
     }
 
     @Override
     public AccessToken transformAccessToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
-        setAccessTokenSubject(token, generateSub(mappingModel, getSectorIdentifier(clientSessionCtx.getClientSession().getClient(), mappingModel), userSession.getUser().getId()));
+        setAccessTokenSubject(token, generateSub(mappingModel, clientSessionCtx.getClientSession().getClient(), userSession.getUser()));
         return token;
     }
 
     @Override
     public AccessToken transformIntrospectionToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
-        setAccessTokenSubject(token, generateSub(mappingModel, getSectorIdentifier(clientSessionCtx.getClientSession().getClient(), mappingModel), userSession.getUser().getId()));
+        setAccessTokenSubject(token, generateSub(mappingModel, clientSessionCtx.getClientSession().getClient(), userSession.getUser()));
         return token;
     }
 
     @Override
+    public LogoutToken transformLogoutToken(LogoutToken token, ProtocolMapperModel mappingModel, KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
+        setLogoutTokenSubject(token, generateSub(mappingModel, clientSessionCtx.getClientSession().getClient(), userSession.getUser()));
+        return token;
+    }
+    @Override
     public AccessToken transformUserInfoToken(AccessToken token, ProtocolMapperModel mappingModel, KeycloakSession session, UserSessionModel userSession, ClientSessionContext clientSessionCtx) {
-        setUserInfoTokenSubject(token, generateSub(mappingModel, getSectorIdentifier(clientSessionCtx.getClientSession().getClient(), mappingModel), userSession.getUser().getId()));
+        setUserInfoTokenSubject(token, generateSub(mappingModel, clientSessionCtx.getClientSession().getClient(), userSession.getUser()));
         return token;
     }
 
@@ -93,6 +106,10 @@ public abstract class AbstractPairwiseSubMapper extends AbstractOIDCProtocolMapp
     }
 
     protected void setAccessTokenSubject(IDToken token, String pairwiseSub) {
+        token.setSubject(pairwiseSub);
+    }
+
+    protected void setLogoutTokenSubject(LogoutToken token, String pairwiseSub) {
         token.setSubject(pairwiseSub);
     }
 

@@ -1,11 +1,15 @@
 package org.keycloak.testsuite.util.saml;
 
 
-import com.sun.net.httpserver.HttpExchange;
-import com.sun.net.httpserver.HttpHandler;
-import com.sun.net.httpserver.HttpServer;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.security.PrivateKey;
+import java.security.PublicKey;
+
 import jakarta.ws.rs.core.HttpHeaders;
-import org.jboss.logging.Logger;
+
 import org.keycloak.common.util.KeyUtils;
 import org.keycloak.dom.saml.v2.protocol.ArtifactResolveType;
 import org.keycloak.dom.saml.v2.protocol.ArtifactResponseType;
@@ -17,17 +21,16 @@ import org.keycloak.protocol.saml.profile.util.Soap;
 import org.keycloak.representations.idm.ClientRepresentation;
 import org.keycloak.saml.SAML2LoginResponseBuilder;
 import org.keycloak.saml.SignatureAlgorithm;
+import org.keycloak.saml.common.constants.JBossSAMLURIConstants;
 import org.keycloak.saml.common.util.DocumentUtil;
 import org.keycloak.saml.processing.api.saml.v2.response.SAML2Response;
 import org.keycloak.saml.processing.core.saml.v2.common.SAMLDocumentHolder;
-import org.w3c.dom.Document;
 
-import java.io.IOException;
-import java.io.OutputStream;
-import java.net.InetAddress;
-import java.net.InetSocketAddress;
-import java.security.PrivateKey;
-import java.security.PublicKey;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpServer;
+import org.jboss.logging.Logger;
+import org.w3c.dom.Document;
 
 public class SamlBackchannelArtifactResolveReceiver implements AutoCloseable {
 
@@ -39,6 +42,8 @@ public class SamlBackchannelArtifactResolveReceiver implements AutoCloseable {
     private final ClientRepresentation samlClient;
     private final PublicKey publicKey;
     private final PrivateKey privateKey;
+    private String inResponseTo;
+    private String destination;
 
     public SamlBackchannelArtifactResolveReceiver(int port, ClientRepresentation samlClient, String publicKeyStr, String privateKeyStr) {
         this.samlClient = samlClient;
@@ -73,6 +78,18 @@ public class SamlBackchannelArtifactResolveReceiver implements AutoCloseable {
         return artifactResolve;
     }
 
+    public void setInResponseTo(String inResponseTo) {
+        this.inResponseTo = inResponseTo;
+    }
+
+    /**
+     * Sets the Destination of the login Response, which is also used as the Recipient of the
+     * assertion's Bearer SubjectConfirmationData (i.e. the SP endpoint that receives the response).
+     */
+    public void setDestination(String destination) {
+        this.destination = destination;
+    }
+
     @Override
     public void close() throws Exception {
         server.stop(0);
@@ -98,7 +115,12 @@ public class SamlBackchannelArtifactResolveReceiver implements AutoCloseable {
                 ResponseType loginResponse = loginResponseBuilder
                         .issuer(samlClient.getClientId())
                         .requestIssuer(artifactResolve.getIssuer().getValue())
-                        .requestID(artifactResolve.getID())
+                        .requestID(inResponseTo)
+                        .destination(destination)
+                        .nameIdentifier(JBossSAMLURIConstants.NAMEID_FORMAT_UNSPECIFIED.get(), "idp-user")
+                        .assertionExpiration(60)
+                        .subjectExpiration(60)
+                        .sessionExpiration(60)
                         .buildModel();
 
                 Document loginResponseBuilderAsDoc = loginResponseBuilder.buildDocument(loginResponse);
@@ -141,5 +163,3 @@ public class SamlBackchannelArtifactResolveReceiver implements AutoCloseable {
         return "true".equals(client.getAttributes().get(SamlConfigAttributes.SAML_CLIENT_SIGNATURE_ATTRIBUTE));
     }
 }
-
-

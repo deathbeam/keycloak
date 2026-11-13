@@ -1,5 +1,12 @@
 import type ClientPolicyRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientPolicyRepresentation";
-import { CodeEditor, Language } from "@patternfly/react-code-editor";
+import {
+  Action,
+  KeycloakDataTable,
+  KeycloakSpinner,
+  ListEmptyState,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   Button,
@@ -19,18 +26,11 @@ import { Controller, useForm, type UseFormReturn } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { translationFormatter } from "../clients/ClientsSection";
-import { useAlerts } from "../components/alert/Alerts";
 import { useConfirmDialog } from "../components/confirm-dialog/ConfirmDialog";
-import { KeycloakSpinner } from "../components/keycloak-spinner/KeycloakSpinner";
-import { ListEmptyState } from "../components/list-empty-state/ListEmptyState";
-import {
-  Action,
-  KeycloakDataTable,
-} from "../components/table-toolbar/KeycloakDataTable";
+import CodeEditor from "../components/form/CodeEditor";
 import { useRealm } from "../context/realm-context/RealmContext";
 import { prettyPrintJSON } from "../util";
-import { useFetch } from "../utils/useFetch";
+import { translationFormatter } from "../utils/translationFormatter";
 import { toAddClientPolicy } from "./routes/AddClientPolicy";
 import { toClientPolicies } from "./routes/ClientPolicies";
 import { toEditClientPolicy } from "./routes/EditClientPolicy";
@@ -78,9 +78,9 @@ export const PoliciesTab = () => {
 
       const allClientPolicies = globalPolicies?.concat(policies ?? []);
 
-      setPolicies(allClientPolicies),
-        setTablePolicies(allClientPolicies || []),
-        setCode(prettyPrintJSON(allClientPolicies));
+      setPolicies(allClientPolicies);
+      setTablePolicies(allClientPolicies || []);
+      setCode(prettyPrintJSON(allClientPolicies));
     },
     [key],
   );
@@ -108,7 +108,7 @@ export const PoliciesTab = () => {
       await adminClient.clientPolicies.updatePolicy({
         policies: updatedPolicies,
       });
-      navigate(toClientPolicies({ realm, tab: "policies" }));
+      void navigate(toClientPolicies({ realm, tab: "policies" }));
       addAlert(t("updateClientPolicySuccess"), AlertVariant.success);
     } catch (error) {
       addError("updateClientPolicyError", error);
@@ -175,7 +175,7 @@ export const PoliciesTab = () => {
         addAlert(t("deleteClientPolicySuccess"), AlertVariant.success);
         refresh();
       } catch (error) {
-        addError(t("deleteClientPolicyError"), error);
+        addError("deleteClientPolicyError", error);
       }
     },
   });
@@ -226,7 +226,9 @@ export const PoliciesTab = () => {
               message={t("noClientPolicies")}
               instructions={t("noClientPoliciesInstructions")}
               primaryActionText={t("createClientPolicy")}
-              onPrimaryAction={() => navigate(toAddClientPolicy({ realm }))}
+              onPrimaryAction={() =>
+                void navigate(toAddClientPolicy({ realm }))
+              }
             />
           }
           ariaLabelKey="clientPolicies"
@@ -272,9 +274,9 @@ export const PoliciesTab = () => {
                   clientPolicy={clientPolicy}
                   form={form}
                   saveStatus={saveStatus}
-                  onConfirm={() => {
+                  onConfirm={async () => {
                     form.setValue(clientPolicy.name!, false);
-                    saveStatus();
+                    await saveStatus();
                   }}
                 />
               ),
@@ -289,13 +291,10 @@ export const PoliciesTab = () => {
         <>
           <div className="pf-v5-u-mt-md pf-v5-u-ml-lg">
             <CodeEditor
-              isLineNumbersVisible
-              isLanguageLabelVisible
-              isReadOnly={false}
-              code={code}
-              language={Language.json}
-              height="30rem"
-              onChange={setCode}
+              value={code}
+              language="json"
+              onChange={(value) => setCode(value)}
+              height={480}
             />
           </div>
           <div className="pf-v5-u-mt-md">

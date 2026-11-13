@@ -1,9 +1,29 @@
 package org.keycloak.testsuite.saml;
 
-import org.junit.Test;
+import java.io.IOException;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.Signature;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+
+import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.Response.Status;
+import jakarta.ws.rs.core.UriBuilder;
+
+import org.keycloak.adapters.saml.SamlDeployment;
+import org.keycloak.admin.client.resource.UserResource;
+import org.keycloak.common.util.PemUtils;
 import org.keycloak.dom.saml.v2.protocol.AuthnRequestType;
+import org.keycloak.dom.saml.v2.protocol.ResponseType;
+import org.keycloak.models.Constants;
 import org.keycloak.protocol.saml.SamlConfigAttributes;
 import org.keycloak.protocol.saml.SamlProtocol;
+import org.keycloak.protocol.saml.SamlProtocolUtils;
+import org.keycloak.rotation.HardcodedKeyLocator;
 import org.keycloak.saml.SignatureAlgorithm;
 import org.keycloak.saml.common.constants.GeneralConstants;
 import org.keycloak.saml.common.constants.JBossSAMLURIConstants;
@@ -13,8 +33,11 @@ import org.keycloak.saml.common.exceptions.ProcessingException;
 import org.keycloak.saml.common.util.DocumentUtil;
 import org.keycloak.saml.processing.api.saml.v2.request.SAML2Request;
 import org.keycloak.saml.processing.core.saml.v2.common.SAMLDocumentHolder;
+import org.keycloak.saml.processing.core.saml.v2.util.AssertionUtil;
 import org.keycloak.saml.processing.web.util.RedirectBindingUtil;
+import org.keycloak.services.resources.LoginActionsService;
 import org.keycloak.services.resources.RealmsResource;
+import org.keycloak.testsuite.admin.AdminApiUtil;
 import org.keycloak.testsuite.updaters.ClientAttributeUpdater;
 import org.keycloak.testsuite.util.KeyUtils;
 import org.keycloak.testsuite.util.Matchers;
@@ -23,42 +46,46 @@ import org.keycloak.testsuite.util.SamlClient.Binding;
 import org.keycloak.testsuite.util.SamlClient.RedirectStrategyWithSwitchableFollowRedirect;
 import org.keycloak.testsuite.util.SamlClient.Step;
 import org.keycloak.testsuite.util.SamlClientBuilder;
-import java.io.IOException;
-import java.net.URI;
-import java.security.Signature;
-import java.util.Collections;
-import java.util.List;
-import java.util.Objects;
-import java.util.logging.Level;
-import java.util.logging.Logger;
-import jakarta.ws.rs.core.Response;
-import jakarta.ws.rs.core.Response.Status;
-import jakarta.ws.rs.core.UriBuilder;
+import org.keycloak.testsuite.util.SamlUtils;
+import org.keycloak.testsuite.util.saml.LoginBuilder;
+import org.keycloak.utils.StringUtil;
+
+import org.apache.http.client.entity.UrlEncodedFormEntity;
 import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.client.methods.HttpPost;
 import org.apache.http.client.methods.HttpUriRequest;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.message.BasicNameValuePair;
 import org.apache.http.util.EntityUtils;
+import org.apache.xml.security.encryption.EncryptedData;
+import org.apache.xml.security.encryption.XMLCipher;
+import org.apache.xml.security.utils.EncryptionConstants;
 import org.hamcrest.Matcher;
 import org.jboss.resteasy.util.Encode;
+import org.junit.Test;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.Matchers.containsString;
-import static org.hamcrest.Matchers.is;
-import static org.hamcrest.Matchers.nullValue;
-import static org.hamcrest.Matchers.notNullValue;
-import static org.hamcrest.Matchers.endsWith;
-import static org.hamcrest.MatcherAssert.assertThat;
-import static org.hamcrest.Matchers.matchesRegex;
 import static org.keycloak.saml.common.constants.JBossSAMLURIConstants.NAMEID_FORMAT_TRANSIENT;
 import static org.keycloak.saml.common.constants.JBossSAMLURIConstants.PROTOCOL_NSURI;
+import static org.keycloak.testsuite.util.Matchers.statusCodeIsHC;
 import static org.keycloak.testsuite.util.ServerURLs.AUTH_SERVER_PORT;
 import static org.keycloak.testsuite.utils.io.IOUtil.documentToString;
 import static org.keycloak.testsuite.utils.io.IOUtil.setDocElementAttributeValue;
-import static org.keycloak.testsuite.util.Matchers.statusCodeIsHC;
+
+import static org.hamcrest.CoreMatchers.not;
+import static org.hamcrest.MatcherAssert.assertThat;
+import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.endsWith;
+import static org.hamcrest.Matchers.is;
+import static org.hamcrest.Matchers.matchesRegex;
+import static org.hamcrest.Matchers.notNullValue;
+import static org.hamcrest.Matchers.nullValue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * @author mhajas
@@ -138,7 +165,7 @@ public class BasicSamlTest extends AbstractSamlTest {
         try (CloseableHttpClient client = HttpClientBuilder.create().setRedirectStrategy(new RedirectStrategyWithSwitchableFollowRedirect()).build();
           CloseableHttpResponse response = client.execute(post)) {
             assertThat(response, statusCodeIsHC(Response.Status.OK));
-            assertThat(EntityUtils.toString(response.getEntity(), "UTF-8"), containsString("login"));
+            assertThat(EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8), containsString("login"));
         }
     }
 
@@ -152,7 +179,7 @@ public class BasicSamlTest extends AbstractSamlTest {
         try (CloseableHttpClient client = HttpClientBuilder.create().setRedirectStrategy(new RedirectStrategyWithSwitchableFollowRedirect()).build();
           CloseableHttpResponse response = client.execute(post)) {
             assertThat(response, statusCodeIsHC(Response.Status.OK));
-            assertThat(EntityUtils.toString(response.getEntity(), "UTF-8"), containsString("login"));
+            assertThat(EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8), containsString("login"));
         }
     }
 
@@ -195,7 +222,7 @@ public class BasicSamlTest extends AbstractSamlTest {
         try (CloseableHttpClient client = HttpClientBuilder.create().setRedirectStrategy(new RedirectStrategyWithSwitchableFollowRedirect()).build();
           CloseableHttpResponse response = client.execute(post)) {
             assertThat(response, statusCodeIsHC(expectedHttpCode));
-            assertThat(EntityUtils.toString(response.getEntity(), "UTF-8"), pageTextMatcher);
+            assertThat(EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8), pageTextMatcher);
         }
     }
 
@@ -212,6 +239,74 @@ public class BasicSamlTest extends AbstractSamlTest {
     @Test
     public void testReauthnWithForceAuthnTrue() throws Exception {
         testReauthnWithForceAuthn(true);
+    }
+
+    @Test
+    public void testForceAuthnAfterRestartPost() {
+        testForceAuthnAfterRestart(Binding.POST);
+    }
+
+    @Test
+    public void testForceAuthnAfterRestartRedirect() {
+        testForceAuthnAfterRestart(Binding.REDIRECT);
+    }
+
+    private void testForceAuthnAfterRestart(Binding requestBinding) {
+        Step assertSamlSuccess = (client, currentURI, currentResponse, context) -> {
+            assertThat(Binding.POST.extractResponse(currentResponse).getSamlObject(),
+                    Matchers.isSamlStatusResponse(JBossSAMLURIConstants.STATUS_SUCCESS));
+            return null;
+        };
+        Step restartLogin = (client, currentURI, currentResponse, context) -> {
+            assertThat(currentResponse, statusCodeIsHC(Status.OK));
+            String loginPage = EntityUtils.toString(currentResponse.getEntity(), StandardCharsets.UTF_8);
+            assertThat("ForceAuthn must require credentials after every restart", loginPage, containsString("id=\"password\""));
+            URI loginAction = URI.create(SamlClient.extractFormFromPostResponse(loginPage).attr("action"));
+            return new HttpGet(UriBuilder.fromUri(loginAction)
+                    .replacePath(loginAction.getPath().substring(0, loginAction.getPath().lastIndexOf('/') + 1) + LoginActionsService.RESTART_PATH)
+                    .replaceQueryParam("session_code")
+                    .replaceQueryParam("execution")
+                    .replaceQueryParam(Constants.SKIP_LOGOUT, "true")
+                    .build());
+        };
+
+        // Keep the same client's cookies throughout the initial login and reauthentication.
+        SamlClient samlClient = new SamlClientBuilder()
+                .authnRequest(getAuthServerSamlEndpoint(REALM_NAME), SAML_CLIENT_ID_SALES_POST, SAML_ASSERTION_CONSUMER_URL_SALES_POST, requestBinding)
+                    .setProtocolBinding(Binding.POST.getBindingUri())
+                    .build()
+                .login().user(bburkeUser).build()
+                .addStep(assertSamlSuccess)
+                .execute();
+
+        UserResource user = AdminApiUtil.findUserByUsernameId(adminClient.realm(REALM_NAME), bburkeUser.getUsername());
+        String userSessionId = user.getUserSessions().get(0).getId();
+
+        samlClient.execute(new SamlClientBuilder()
+                .authnRequest(getAuthServerSamlEndpoint(REALM_NAME), SAML_CLIENT_ID_SALES_POST2, SAML_ASSERTION_CONSUMER_URL_SALES_POST2, requestBinding)
+                    .setProtocolBinding(Binding.POST.getBindingUri())
+                    .transformObject(request -> {
+                        request.setForceAuthn(true);
+                        return request;
+                    })
+                    .build()
+                .addStep(restartLogin)
+                .addStep(restartLogin)
+                .addStep((client, currentURI, currentResponse, context) -> {
+                    assertThat(currentResponse, statusCodeIsHC(Status.OK));
+                    String loginPage = EntityUtils.toString(currentResponse.getEntity(), StandardCharsets.UTF_8);
+                    assertThat("ForceAuthn must still require credentials after repeated restarts", loginPage, containsString("id=\"password\""));
+                    assertThat("Restarting with skip_logout=true must preserve the original SSO session",
+                            user.getUserSessions().stream().anyMatch(userSession -> userSessionId.equals(userSession.getId())), is(true));
+                    return LoginBuilder.handleLoginPage(bburkeUser, loginPage);
+                })
+                .addStep(assertSamlSuccess)
+                // A subsequent request without ForceAuthn must still be able to use SSO.
+                .authnRequest(getAuthServerSamlEndpoint(REALM_NAME), SAML_CLIENT_ID_SALES_POST, SAML_ASSERTION_CONSUMER_URL_SALES_POST, requestBinding)
+                    .setProtocolBinding(Binding.POST.getBindingUri())
+                    .build()
+                .addStep(assertSamlSuccess)
+                .getSteps());
     }
 
     private void testReauthnWithForceAuthn(Boolean reloginRequired) throws Exception {
@@ -341,7 +436,7 @@ public class BasicSamlTest extends AbstractSamlTest {
                     .build()
                     .executeAndTransform(response -> {
                         assertThat(response, statusCodeIsHC(Status.BAD_REQUEST));
-                        return EntityUtils.toString(response.getEntity(), "UTF-8");
+                        return EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
                     });
             assertThat(page, containsString("Invalid redirect uri"));
         }
@@ -359,7 +454,7 @@ public class BasicSamlTest extends AbstractSamlTest {
                     .login().user(bburkeUser).build()
                     .executeAndTransform(response -> {
                         assertThat(response, statusCodeIsHC(Response.Status.OK));
-                        String responsePage = EntityUtils.toString(response.getEntity(), "UTF-8");
+                        String responsePage = EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8);
                         return SamlClient.extractFormFromPostResponse(responsePage)
                                 .attributes().asList().stream()
                                 .filter(a -> "action".equalsIgnoreCase(a.getKey()))
@@ -368,6 +463,130 @@ public class BasicSamlTest extends AbstractSamlTest {
                     });
             // if not encoded properly jsoup returns ":" instead of "&colon;"
             assertThat(action, endsWith("javascript&colon;alert('xss');"));
+        }
+    }
+
+    private void testEncryption(String algorithm, String keyAlgorithm, String digestMethod, String maskGenerationFunction) throws Exception {
+        testEncryption(algorithm, keyAlgorithm, digestMethod, maskGenerationFunction,
+                algorithm, keyAlgorithm, digestMethod, maskGenerationFunction);
+    }
+
+    private void testEncryption(String algorithm, String keyAlgorithm, String digestMethod, String maskGenerationFunction,
+            String expectedAlgorithm, String expectedKeyAlgorithm, String expectedDigestMethod, String expectedMaxskGenerationFuntion) throws Exception {
+        try (var c = ClientAttributeUpdater.forClient(adminClient, REALM_NAME, SAML_CLIENT_ID_SALES_POST_ENC)
+                .setAttribute(SamlConfigAttributes.SAML_SERVER_SIGNATURE, Boolean.TRUE.toString())
+                .setAttribute(SamlConfigAttributes.SAML_ENCRYPT, Boolean.TRUE.toString())
+                .setAttribute(SamlConfigAttributes.SAML_ENCRYPTION_ALGORITHM, algorithm)
+                .setAttribute(SamlConfigAttributes.SAML_ENCRYPTION_KEY_ALGORITHM, keyAlgorithm)
+                .setAttribute(SamlConfigAttributes.SAML_ENCRYPTION_DIGEST_METHOD, digestMethod)
+                .setAttribute(SamlConfigAttributes.SAML_ENCRYPTION_MASK_GENERATION_FUNTION, maskGenerationFunction)
+                .update()) {
+            SAMLDocumentHolder holder = new SamlClientBuilder()
+                    .authnRequest(getAuthServerSamlEndpoint(REALM_NAME), SAML_CLIENT_ID_SALES_POST_ENC, SAML_ASSERTION_CONSUMER_URL_SALES_POST_ENC, Binding.POST)
+                    .signWith(SAML_CLIENT_SALES_POST_ENC_PRIVATE_KEY, SAML_CLIENT_SALES_POST_ENC_PUBLIC_KEY)
+                    .build()
+                    .login().user(bburkeUser).build()
+                    .getSamlResponse(Binding.POST);
+
+            // check it is signed
+            SamlProtocolUtils.verifyDocumentSignature(holder.getSamlDocument(), new HardcodedKeyLocator(PemUtils.decodePublicKey(REALM_PUBLIC_KEY)));
+
+            // check document is encrypted
+            ResponseType responseType = (ResponseType) holder.getSamlObject();
+            assertTrue(AssertionUtil.isAssertionEncrypted(responseType), "Assertion is not encrypted");
+
+            SamlDeployment deployment = SamlUtils.getSamlDeploymentForClient("sales-post-enc");
+            AssertionUtil.decryptAssertion(responseType, (EncryptedData encryptedData) -> Collections.singletonList(deployment.getDecryptionKey()));
+
+            // check algorithm is the expected one
+            NodeList list = holder.getSamlDocument().getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC_NSURI.get(), "EncryptedData");
+            assertThat("EncryptedData missing", list.getLength(), is(1));
+            Element encryptedData = (Element) list.item(0);
+            list = encryptedData.getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC_NSURI.get(), "EncryptionMethod");
+            assertThat("EncryptionMethod missing", list.getLength(), is(2));
+            Element encryptionMethod = (Element) list.item(0);
+            assertThat("Unexpected encryption method", encryptionMethod.getAttribute("Algorithm"), is(expectedAlgorithm));
+
+            // check keyAlgorithm is the expected one
+            list = encryptedData.getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC_NSURI.get(), "EncryptedKey");
+            assertThat("EncryptedKey missing", list.getLength(), is(1));
+            Element encryptedKey = (Element) list.item(0);
+            list = encryptedKey.getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC_NSURI.get(), "EncryptionMethod");
+            assertThat("EncryptionMethod missing", list.getLength(), is(1));
+            encryptionMethod = (Element) list.item(0);
+            assertThat("Unexpected key encryption method", encryptionMethod.getAttribute("Algorithm"), is(expectedKeyAlgorithm));
+
+            // check digestMethod is the expected one or missing
+            if (StringUtil.isNotBlank(expectedDigestMethod)) {
+                list = encryptionMethod.getElementsByTagNameNS(JBossSAMLURIConstants.XMLDSIG_NSURI.get(), "DigestMethod");
+                assertThat("EncryptionMethod missing", list.getLength(), is(1));
+                Element ds = (Element) list.item(0);
+                assertThat("Unexpected digest method", ds.getAttribute("Algorithm"), is(expectedDigestMethod));
+            } else {
+                assertThat(encryptionMethod.getElementsByTagNameNS(JBossSAMLURIConstants.XMLDSIG_NSURI.get(), "DigestMethod").getLength(), is(0));
+            }
+
+            // check mgf is the expected one or missing
+            if (StringUtil.isNotBlank(expectedMaxskGenerationFuntion)) {
+                list = encryptionMethod.getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC11_NSURI.get(), "MGF");
+                assertThat("EncryptionMethod missing", list.getLength(), is(1));
+                Element mgf = (Element) list.item(0);
+                assertThat("Unexpected mgf method", mgf.getAttribute("Algorithm"), is(expectedMaxskGenerationFuntion));
+            } else {
+                assertThat(encryptionMethod.getElementsByTagNameNS(JBossSAMLURIConstants.XMLENC11_NSURI.get(), "MGF").getLength(), is(0));
+            }
+        }
+    }
+
+    @Test
+    public void testEncryptionDefault() throws Exception {
+        testEncryption("", "", "", "", XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP_11, XMLCipher.SHA256, EncryptionConstants.MGF1_SHA256);
+    }
+
+    @Test
+    public void testEncryptionRsaOaep11() throws Exception {
+        testEncryption(XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP_11, XMLCipher.SHA512, EncryptionConstants.MGF1_SHA512);
+    }
+
+    @Test
+    public void testEncryptionRsaOaep11Default() throws Exception {
+        testEncryption(XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP_11, XMLCipher.SHA1, EncryptionConstants.MGF1_SHA1, XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP_11, "", EncryptionConstants.MGF1_SHA1);
+    }
+
+    @Test
+    public void testEncryptionRsaOaep() throws Exception {
+        testEncryption(XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP, XMLCipher.SHA256, "", XMLCipher.AES_256_GCM, XMLCipher.RSA_OAEP, XMLCipher.SHA256, "");
+    }
+
+    @Test
+    public void testEncryptionRsaOaepLegacy() throws Exception {
+        testEncryption(XMLCipher.AES_128, XMLCipher.RSA_OAEP, XMLCipher.SHA1, "", XMLCipher.AES_128, XMLCipher.RSA_OAEP, "", "");
+    }
+
+    @Test
+    public void testEncryptionRsa15() throws Exception {
+        testEncryption(XMLCipher.AES_256_GCM, XMLCipher.RSA_v1dot5, "", "");
+    }
+
+    /**
+     * Tests that invalid Base64 in SAMLRequest returns 400 Bad Request instead of 500 Internal Server Error.
+     *
+     * @see <a href="https://github.com/keycloak/keycloak/issues/44803">Issue #44803</a>
+     */
+    @Test
+    public void testInvalidBase64InSamlRequestReturnsBadRequest() throws Exception {
+        // Invalid Base64 string containing '?' character (decimal 63) which is not valid Base64
+        String invalidBase64 = "SGVsbG8gV29ybGQ/InvalidBase64!@#$";
+
+        HttpPost post = new HttpPost(getAuthServerSamlEndpoint(REALM_NAME));
+        List<BasicNameValuePair> parameters = new java.util.ArrayList<>();
+        parameters.add(new BasicNameValuePair(GeneralConstants.SAML_REQUEST_KEY, invalidBase64));
+        post.setEntity(new UrlEncodedFormEntity(parameters, StandardCharsets.UTF_8));
+
+        try (CloseableHttpClient client = HttpClientBuilder.create().build();
+             CloseableHttpResponse response = client.execute(post)) {
+            assertThat(response, statusCodeIsHC(Status.BAD_REQUEST));
+            assertThat(EntityUtils.toString(response.getEntity(), StandardCharsets.UTF_8), containsString("Invalid Request"));
         }
     }
 }

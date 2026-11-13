@@ -5,6 +5,8 @@ import {
   HelpItem,
   KeycloakSelect,
   SelectVariant,
+  useAlerts,
+  useFetch,
 } from "@keycloak/keycloak-ui-shared";
 import {
   ActionGroup,
@@ -19,12 +21,10 @@ import { Controller, FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { DynamicComponents } from "../components/dynamic/DynamicComponents";
 import { FormAccess } from "../components/form/FormAccess";
 import { ViewHeader } from "../components/view-header/ViewHeader";
 import { useServerInfo } from "../context/server-info/ServerInfoProvider";
-import { useFetch } from "../utils/useFetch";
 import { useParams } from "../utils/useParams";
 import { ClientProfileParams, toClientProfile } from "./routes/ClientProfile";
 import type { ExecutorParams } from "./routes/Executor";
@@ -126,7 +126,7 @@ export default function ExecutorForm() {
         AlertVariant.success,
       );
 
-      navigate(toClientProfile({ realm, profileName }));
+      void navigate(toClientProfile({ realm, profileName }));
     } catch (error) {
       addError(editMode ? "updateExecutorError" : "addExecutorError", error);
     }
@@ -211,6 +211,7 @@ export default function ExecutorForm() {
                 >
                   {executorTypes?.map((option) => (
                     <SelectOption
+                      data-testid={option.id}
                       selected={option.id === field.value}
                       key={option.id}
                       value={option.id}

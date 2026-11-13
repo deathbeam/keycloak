@@ -28,7 +28,6 @@ import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
-import org.jboss.logging.Logger;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.UserModel;
 import org.keycloak.provider.ConfiguredProvider;
@@ -36,7 +35,10 @@ import org.keycloak.representations.idm.UserProfileAttributeGroupMetadata;
 import org.keycloak.representations.idm.UserProfileAttributeMetadata;
 import org.keycloak.representations.userprofile.config.UPConfig;
 import org.keycloak.representations.userprofile.config.UPGroup;
+import org.keycloak.utils.StringUtil;
 import org.keycloak.validate.Validators;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -119,6 +121,35 @@ public class UserProfileUtil {
                 || UserModel.LOCALE.equals(name);
     }
 
+    /**
+     * Sets the configured default value of each attribute that is read-only in the context of the given {@code attributes}
+     * and has no value on the {@code user}. Read-only attributes are not persisted from the attributes provided in a context,
+     * so this is needed when creating users to make sure their default values are stored. The value always comes from
+     * the configuration, never from the attributes provided in the context.
+     *
+     * @param user the newly created user
+     * @param attributes the attributes of the profile used to create the user
+     */
+    public static void setDefaultValuesForReadOnlyAttributes(UserModel user, Attributes attributes) {
+        for (String name : attributes.nameSet()) {
+            if (isRootAttribute(name) || !attributes.isReadOnly(name)) {
+                continue;
+            }
+
+            AttributeMetadata attributeMetadata = attributes.getMetadata(name);
+
+            if (attributeMetadata == null || StringUtil.isBlank(attributeMetadata.getDefaultValue())) {
+                continue;
+            }
+
+            if (user.getAttributeStream(name).anyMatch(StringUtil::isNotBlank)) {
+                continue;
+            }
+
+            user.setSingleAttribute(name, attributeMetadata.getDefaultValue());
+        }
+    }
+
     public static org.keycloak.representations.idm.UserProfileMetadata createUserProfileMetadata(KeycloakSession session, UserProfile profile) {
         Attributes profileAttributes = profile.getAttributes();
         Map<String, List<String>> am = profileAttributes.getReadable();
@@ -155,14 +186,17 @@ public class UserProfileUtil {
             group = am.getAttributeGroupMetadata().getName();
         }
 
+        Attributes attributes = profile.getAttributes();
+
         return new UserProfileAttributeMetadata(am.getName(),
                 am.getAttributeDisplayName(),
-                profile.getAttributes().isRequired(am.getName()),
-                profile.getAttributes().isReadOnly(am.getName()),
+                attributes.isRequired(am.getName()),
+                attributes.isReadOnly(am.getName()),
                 group,
-                am.getAnnotations(),
+                attributes.getAnnotations(am.getName()),
                 toValidatorMetadata(am, session),
-                am.isMultivalued());
+                am.isMultivalued(),
+                am.getDefaultValue());
     }
 
     private static Map<String, Map<String, Object>> toValidatorMetadata(AttributeMetadata am, KeycloakSession session){

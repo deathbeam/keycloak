@@ -20,11 +20,12 @@ package org.keycloak.models.cache.infinispan.events;
 import java.util.Objects;
 import java.util.Set;
 
+import org.keycloak.marshalling.Marshalling;
+import org.keycloak.models.cache.infinispan.RealmCacheManager;
+
 import org.infinispan.protostream.annotations.ProtoFactory;
 import org.infinispan.protostream.annotations.ProtoField;
 import org.infinispan.protostream.annotations.ProtoTypeId;
-import org.keycloak.marshalling.Marshalling;
-import org.keycloak.models.cache.infinispan.RealmCacheManager;
 
 /**
  *
@@ -46,7 +47,7 @@ public class GroupAddedEvent extends InvalidationEvent implements RealmCacheInva
 
     @ProtoFactory
     static GroupAddedEvent protoFactory(String id, String realmId, String parentId) {
-        return new GroupAddedEvent(id, realmId, Marshalling.emptyStringToNull(parentId));
+        return new GroupAddedEvent(id, realmId, parentId);
     }
 
     public static GroupAddedEvent create(String groupId, String parentId, String realmId) {

@@ -1,19 +1,18 @@
+import { fetchWithError } from "@keycloak/keycloak-admin-client";
 import type RequiredActionProviderRepresentation from "@keycloak/keycloak-admin-client/lib/defs/requiredActionProviderRepresentation";
 import type RequiredActionProviderSimpleRepresentation from "@keycloak/keycloak-admin-client/lib/defs/requiredActionProviderSimpleRepresentation";
+import { useAlerts, useFetch } from "@keycloak/keycloak-ui-shared";
 import { AlertVariant, Button, Switch } from "@patternfly/react-core";
 import { CogIcon } from "@patternfly/react-icons";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
-import { KeycloakSpinner } from "../components/keycloak-spinner/KeycloakSpinner";
+import { KeycloakSpinner } from "@keycloak/keycloak-ui-shared";
+import { useRealm } from "../context/realm-context/RealmContext";
 import { addTrailingSlash, toKey } from "../util";
-import { useFetch } from "../utils/useFetch";
+import { getAuthorizationHeaders } from "../utils/getAuthorizationHeaders";
 import { DraggableTable } from "./components/DraggableTable";
 import { RequiredActionConfigModal } from "./components/RequiredActionConfigModal";
-import { fetchWithError } from "@keycloak/keycloak-admin-client";
-import { getAuthorizationHeaders } from "../utils/getAuthorizationHeaders";
-import { useRealm } from "../context/realm-context/RealmContext";
 
 type DataType = RequiredActionProviderRepresentation &
   RequiredActionProviderSimpleRepresentation & {
@@ -21,7 +20,7 @@ type DataType = RequiredActionProviderRepresentation &
   };
 
 type Row = {
-  name: string;
+  name?: string;
   enabled: boolean;
   defaultAction: boolean;
   data: DataType;
@@ -161,7 +160,7 @@ export const RequiredActions = () => {
           if (!dragged.alias) return;
 
           const times = newIndex - oldIndex;
-          executeMove(dragged, times);
+          await executeMove(dragged, times);
         }}
         columns={[
           {
@@ -174,14 +173,14 @@ export const RequiredActions = () => {
             displayKey: "enabled",
             cellRenderer: (row) => (
               <Switch
-                id={`enable-${toKey(row.name)}`}
+                id={`enable-${toKey(row.name || "")}`}
                 label={t("on")}
                 labelOff={t("off")}
                 isChecked={row.enabled}
-                onChange={() => {
-                  updateAction(row.data, "enabled");
+                onChange={async () => {
+                  await updateAction(row.data, "enabled");
                 }}
-                aria-label={toKey(row.name)}
+                aria-label={row.name}
               />
             ),
             width: 20,
@@ -192,15 +191,15 @@ export const RequiredActions = () => {
             thTooltipText: "authDefaultActionTooltip",
             cellRenderer: (row) => (
               <Switch
-                id={`default-${toKey(row.name)}`}
+                id={`default-${toKey(row.name || "")}`}
                 label={t("on")}
                 isDisabled={!row.enabled}
                 labelOff={!row.enabled ? t("disabledOff") : t("off")}
                 isChecked={row.defaultAction}
-                onChange={() => {
-                  updateAction(row.data, "defaultAction");
+                onChange={async () => {
+                  await updateAction(row.data, "defaultAction");
                 }}
-                aria-label={toKey(row.name)}
+                aria-label={row.name}
               />
             ),
             width: 20,

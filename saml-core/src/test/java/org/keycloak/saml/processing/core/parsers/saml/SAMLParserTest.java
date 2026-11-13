@@ -16,16 +16,20 @@
  */
 package org.keycloak.saml.processing.core.parsers.saml;
 
-import org.hamcrest.Matcher;
-import org.hamcrest.Matchers;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.ExpectedException;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.security.PrivateKey;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
+import javax.xml.namespace.QName;
+
 import org.keycloak.common.crypto.CryptoIntegration;
 import org.keycloak.common.crypto.CryptoProvider;
-import org.keycloak.common.util.Base64;
 import org.keycloak.common.util.DerUtils;
 import org.keycloak.common.util.StreamUtil;
 import org.keycloak.dom.saml.v2.SAML2Object;
@@ -75,19 +79,17 @@ import org.keycloak.saml.processing.api.saml.v2.response.SAML2Response;
 import org.keycloak.saml.processing.core.saml.v2.common.SAMLDocumentHolder;
 import org.keycloak.saml.processing.core.saml.v2.util.AssertionUtil;
 import org.keycloak.saml.processing.core.saml.v2.util.XMLTimeUtil;
+
+import org.hamcrest.Matcher;
+import org.hamcrest.Matchers;
+import org.junit.Before;
+import org.junit.BeforeClass;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.ExpectedException;
 import org.w3c.dom.Element;
 
-import javax.xml.namespace.QName;
-import java.io.ByteArrayInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.math.BigInteger;
-import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.security.PrivateKey;
-import java.util.Collections;
-import java.util.List;
-
+import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.contains;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.containsString;
@@ -105,7 +107,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.hamcrest.MatcherAssert.assertThat;
 import static org.junit.Assert.assertTrue;
 /**
  * Test class for SAML parser.
@@ -138,7 +139,8 @@ public class SAMLParserTest {
 
     @Before
     public void initParser() {
-        this.parser = SAMLParser.getInstance();
+        parser = SAMLParser.getInstance();
+        parser.enableSaml11Parsers();
     }
 
     private <T> T assertParsed(String fileName, Class<T> expectedType) throws IOException, ParsingException, ConfigurationException, ProcessingException {
@@ -217,7 +219,7 @@ public class SAMLParserTest {
         assertNull(rtChoiceType.getAssertion());
         assertNotNull(rtChoiceType.getEncryptedAssertion());
 
-        PrivateKey privateKey = DerUtils.decodePrivateKey(Base64.decode(PRIVATE_KEY));
+        PrivateKey privateKey = DerUtils.decodePrivateKey(Base64.getMimeDecoder().decode(PRIVATE_KEY));
         AssertionUtil.decryptAssertion(resp, privateKey);
 
         rtChoiceType = resp.getAssertions().get(0);
@@ -760,6 +762,45 @@ public class SAMLParserTest {
         thrown.expectMessage(containsString("NameIDFormat"));
 
         assertParsed("saml20-entity-descriptor-idp-invalid-end-element.xml", EntityDescriptorType.class);
+    }
+
+    @Test(expected = ParsingException.class)
+    public void testSaml11AssertionsNotWellFormed() throws Exception {
+        try (InputStream st = SAMLParserTest.class.getResourceAsStream("saml11-assertion-not-wellformed.xml")) {
+            parser.parse(st);
+        }
+    }
+
+    @Test(timeout = 1000)
+    public void testSaml11WrongKeyInfo() throws Exception {
+        String exMessage = "";
+        try (InputStream st = SAMLParserTest.class.getResourceAsStream("saml11-wrong-keyinfo.xml")) {
+            parser.parse(st);
+        } catch (ParsingException e) {
+            exMessage = e.getMessage();
+        }
+        assertThat(exMessage, containsString("tag:KeyName"));
+    }
+
+    @Test
+    public void testSaml11AuthorityBinding() throws Exception {
+        try (InputStream st = SAMLParserTest.class.getResourceAsStream("saml11-authoritybinding.xml")) {
+            parser.parse(st);
+        }
+    }
+
+    @Test(expected = ParsingException.class)
+    public void testSaml11AthorizationDecisionQueryNotWellFormed() throws Exception {
+        try (InputStream st = SAMLParserTest.class.getResourceAsStream("saml11-authorizatiodecisionquery-not-wellformed.xml")) {
+            parser.parse(st);
+        }
+    }
+
+    @Test(expected = ParsingException.class)
+    public void testSaml11AuthenticationQueryNotWellFormed() throws Exception {
+        try (InputStream st = SAMLParserTest.class.getResourceAsStream("saml11-authenticationquery-not-wellformed.xml")) {
+            parser.parse(st);
+        }
     }
 
     @Test

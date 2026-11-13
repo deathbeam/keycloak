@@ -1,10 +1,11 @@
 <#import "/templates/guide.adoc" as tmpl>
+<#import "/templates/links.adoc" as links>
 
 <@tmpl.guide
 title="Migrating to Quarkus distribution"
 summary="Migrate to the new Quarkus distribution from the legacy WildFly distribution">
 
-In Keycloak 17 the default distribution is now powered by Quarkus, while the legacy WildFly powered distribution will still be around until June 2022 we highly recommend starting the migration as soon as possible.
+Starting with Keycloak 17 the default distribution is now powered by Quarkus, while the legacy WildFly powered distribution will still be around until June 2022 we highly recommend starting the migration as soon as possible.
 
 The new distribution introduces a number of breaking changes, including:
 
@@ -49,7 +50,7 @@ However, there is also an auto build mode that makes Keycloak behave more or les
 The Keycloak Wildfly distribution contained scripts named `add-user-keycloak.sh` to add initial users to Keycloak.
 These are no longer included in the Quarkus distribution.
 
-To add the initial admin user, set the environment variables `KEYCLOAK_ADMIN` and `KEYCLOAK_ADMIN_PASSWORD` for the username and password of the user.
+To add the initial admin user, set the environment variables `KC_BOOTSTRAP_ADMIN_USERNAME` and `KC_BOOTSTRAP_ADMIN_PASSWORD` for the username and password of the user.
 Keycloak uses them at the first startup to create an initial user with administration rights.
 Once the first user with administrative rights exists, use the command line tool `kcadm.sh` (Linux) or `kcadm.bat` (Windows) to create additional users.
 
@@ -62,6 +63,9 @@ By default, the new Quarkus distribution removes `/auth` from the context-path. 
 bin/kc.[sh|bat] start-dev --http-relative-path /auth
 ----
 
+When the relative path is specified, it is still possible to be redirected from the root to the relative path.
+Specifically, when the user access `localhost:8080/`, the page is redirected to the `localhost:8080/auth`.
+
 == Migrating custom providers
 
 Similarly to the WildFly distribution custom providers are deployed to Keycloak by copying them to a deployment directory. In the new distribution you should copy your providers to the `providers` directory instead of `standalone/deployments`, which no longer exists. Additional dependencies are also copied to the `providers` directory.
@@ -72,6 +76,11 @@ While the WildFly distribution automatically discovered custom providers, even s
 
 Depending on what APIs your providers use you may also need to make some changes to the providers. If you only leveraged classes from Keycloak SPIs you shouldn't need to, but if you used other APIs from WildFly you may need to make some changes. In addition, JavaEE APIs like session/stateless beans are no longer supported.
 
+== Migrating containers
+
+The container images for the Quarkus distribution derive from UBI Micro instead of UBI Minimal. This means that some binaries or configuration files (those not necessary for Keycloak's main functionality) may be missing. The solution is to add these files in as part of the container customization process explained in the <@links.server id="containers" /> {section}.
+
+For example, for the Kerberos authentication features you will need to add `/etc/krb5.conf`. The `krb5-libs` RPM previously supplied this file, but was removed in the switch to UBI Micro. Note that binaries from `krb5-libs` are not required for Keycloak's Kerberos authentication features to work.
 
 == Migrating using the Operator
 
@@ -90,7 +99,7 @@ apiVersion: keycloak.org/v1alpha1
 For the new operator, the apiVersion is:
 [source,yaml]
 ----
-apiVersion: k8s.keycloak.org/v2alpha1
+apiVersion: k8s.keycloak.org/v2beta1
 ----
 
 When using `kubectl` commands, and the 2 CRDs are installed in the cluster, make sure to use fully qualified names including the API Group, e.g.:
@@ -100,11 +109,11 @@ When using `kubectl` commands, and the 2 CRDs are installed in the cluster, make
 $ kubectl get keycloaks.k8s.keycloak.org
 ----
 
-The new operator doesn't support Client, User and Realm CRDs directly. Instead, it provides one CRD to perform a https://www.keycloak.org/operator/realm-import.html[Realm import].
+The new operator doesn't support Client, User and Realm CRDs directly. Instead, it provides one CRD to perform a realm import as described in <@links.operator id="realm-import" />.
 Using this new CR you can import Users, Clients and more through the wrapping Realm.
 
 == Priority of X-Forwarded-* Headers
 
-In Quarkus the X-Forwarded-Port header takes precedence over any port included in the X-Forwarded-Host. This differs from the WildFly distribution where a port included in X-Forwarded-Host had priority over X-Forwarded-Port.
+In Quarkus when using the Hostname V1 feature the X-Forwarded-Port header takes precedence over any port included in the X-Forwarded-Host. This differs from the WildFly distribution where a port included in X-Forwarded-Host had priority over X-Forwarded-Port.
 
 </@tmpl.guide>

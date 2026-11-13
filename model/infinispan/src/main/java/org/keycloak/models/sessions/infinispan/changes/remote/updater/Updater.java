@@ -16,9 +16,10 @@
  */
 package org.keycloak.models.sessions.infinispan.changes.remote.updater;
 
-import org.keycloak.models.sessions.infinispan.changes.remote.RemoteChangeLogTransaction;
 
 import java.util.function.BiFunction;
+
+import org.keycloak.models.sessions.infinispan.remote.transaction.RemoteChangeLogTransaction;
 
 /**
  * An interface used by {@link RemoteChangeLogTransaction}.
@@ -29,6 +30,8 @@ import java.util.function.BiFunction;
  * @param <V> The Infinispan value type.
  */
 public interface Updater<K, V> extends BiFunction<K, V, V> {
+
+    int NO_VERSION = -1;
 
     /**
      * @return The Infinispan cache key.
@@ -63,9 +66,26 @@ public interface Updater<K, V> extends BiFunction<K, V, V> {
     boolean isReadOnly();
 
     /**
+     * @return {@code true} if the entity is expired.
+     */
+    boolean isExpired();
+
+    /**
+     * @return {@code true} if the entity is not valid and cannot be viewed/accessed from the transaction.
+     */
+    default boolean isInvalid() {
+        return isExpired() || isDeleted();
+    }
+
+    /**
      * Marks the entity as deleted.
      */
     void markDeleted();
+
+    /**
+     * Marks the entity as expired when loading from the Infinispan cache.
+     */
+    void markExpired();
 
     /**
      * @return {@code true} if the entity is transient and shouldn't be stored in the Infinispan cache.
@@ -80,4 +100,8 @@ public interface Updater<K, V> extends BiFunction<K, V, V> {
      * @return The {@link Expiration} data.
      */
     Expiration computeExpiration();
+
+    default boolean hasVersion() {
+        return getVersionRead() != NO_VERSION;
+    }
 }

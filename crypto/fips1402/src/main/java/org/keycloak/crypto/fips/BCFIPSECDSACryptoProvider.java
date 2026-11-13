@@ -1,15 +1,5 @@
 package org.keycloak.crypto.fips;
 
-import org.bouncycastle.asn1.ASN1InputStream;
-import org.bouncycastle.asn1.ASN1Integer;
-import org.bouncycastle.asn1.ASN1Primitive;
-import org.bouncycastle.asn1.ASN1Sequence;
-import org.bouncycastle.asn1.DERSequenceGenerator;
-import org.bouncycastle.asn1.x9.X9IntegerConverter;
-import org.bouncycastle.jcajce.spec.ECDomainParameterSpec;
-import org.bouncycastle.math.ec.ECPoint;
-import org.keycloak.common.crypto.ECDSACryptoProvider;
-
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigInteger;
@@ -20,6 +10,17 @@ import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPublicKeySpec;
 import java.security.spec.InvalidKeySpecException;
+
+import org.keycloak.common.crypto.ECDSACryptoProvider;
+
+import org.bouncycastle.asn1.ASN1InputStream;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.ASN1Primitive;
+import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DERSequenceGenerator;
+import org.bouncycastle.asn1.x9.X9IntegerConverter;
+import org.bouncycastle.jcajce.spec.ECDomainParameterSpec;
+import org.bouncycastle.math.ec.ECPoint;
 
 public class BCFIPSECDSACryptoProvider implements ECDSACryptoProvider {
 
@@ -51,9 +52,10 @@ public class BCFIPSECDSACryptoProvider implements ECDSACryptoProvider {
     public byte[] asn1derToConcatenatedRS(final byte[] derEncodedSignatureValue, int signLength) throws IOException {
         int len = signLength / 2;
 
-        ASN1InputStream asn1InputStream = new ASN1InputStream(derEncodedSignatureValue);
-        ASN1Primitive asn1Primitive = asn1InputStream.readObject();
-        asn1InputStream.close();
+        ASN1Primitive asn1Primitive;
+        try (ASN1InputStream asn1InputStream = new ASN1InputStream(derEncodedSignatureValue)) {
+            asn1Primitive = asn1InputStream.readObject();
+        }
 
         ASN1Sequence asn1Sequence = (ASN1Sequence.getInstance(asn1Primitive));
         ASN1Integer rASN1 = (ASN1Integer) asn1Sequence.getObjectAt(0);

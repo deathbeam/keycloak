@@ -33,15 +33,17 @@ import java.util.Calendar;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
-
 import javax.security.auth.x500.X500Principal;
 
-import org.jboss.logging.Logger;
 import org.keycloak.common.crypto.CertificateUtilsProvider;
+
+import org.jboss.logging.Logger;
 import org.wildfly.security.asn1.ASN1;
 import org.wildfly.security.asn1.DERDecoder;
 import org.wildfly.security.x500.GeneralName;
 import org.wildfly.security.x500.X500;
+import org.wildfly.security.x500.X500AttributeTypeAndValue;
+import org.wildfly.security.x500.X500PrincipalBuilder;
 import org.wildfly.security.x500.cert.AuthorityKeyIdentifierExtension;
 import org.wildfly.security.x500.cert.BasicConstraintsExtension;
 import org.wildfly.security.x500.cert.CertificatePoliciesExtension;
@@ -71,9 +73,9 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
      * @param caPrivateKey the CA private key
      * @param caCert the CA certificate
      * @param subject the subject name
-     * 
+     *
      * @return the x509 certificate
-     * 
+     *
      * @throws Exception the exception
      */
     @Override
@@ -82,7 +84,7 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
             String subject) throws Exception {
         try {
 
-            X500Principal subjectdn = subjectToX500Principle(subject);
+            X500Principal subjectdn = cnToX500Principal(subject);
             X500Principal issuerdn = caCert.getSubjectX500Principal();
 
             // Validity
@@ -112,8 +114,6 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
 
                     .setSerialNumber(serialNumber)
 
-                    .setSignatureAlgorithmName("SHA256withRSA")
-
                     .setSigningKey(caPrivateKey)
 
                     // Subject Key Identifier Extension
@@ -135,6 +135,14 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
                     // Basic Constraints
                     .addExtension(new BasicConstraintsExtension(true, true, 0));
 
+            switch (caPrivateKey.getAlgorithm()){
+                case "EC":
+                    cbuilder.setSignatureAlgorithmName("SHA256withECDSA");
+                    break;
+                default:
+                    cbuilder.setSignatureAlgorithmName("SHA256withRSA");
+            }
+
             return cbuilder.build();
 
         } catch (Exception e) {
@@ -147,9 +155,9 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
      *
      * @param caKeyPair the CA key pair
      * @param subject the subject name
-     * 
+     *
      * @return the x509 certificate
-     * 
+     *
      * @throws Exception the exception
      */
     @Override
@@ -160,16 +168,21 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
     @Override
     public X509Certificate generateV1SelfSignedCertificate(KeyPair caKeyPair, String subject,
             BigInteger serialNumber) {
+        Calendar calendar = Calendar.getInstance();
+        calendar.add(Calendar.YEAR, 10);
+        return generateV1SelfSignedCertificate(caKeyPair, subject, serialNumber, calendar.getTime());
+    }
+
+    @Override
+    public X509Certificate generateV1SelfSignedCertificate(KeyPair caKeyPair, String subject, BigInteger serialNumber, Date validityEndDate) {
         try {
 
-            X500Principal subjectdn = subjectToX500Principle(subject);
+            X500Principal subjectdn = cnToX500Principal(subject);
 
             ZonedDateTime notBefore = ZonedDateTime.ofInstant(
                     (new Date(System.currentTimeMillis() - 100000)).toInstant(),
                     ZoneId.systemDefault());
-            Calendar calendar = Calendar.getInstance();
-            calendar.add(Calendar.YEAR, 10);
-            Date validityEndDate = new Date(calendar.getTime().getTime());
+
             ZonedDateTime notAfter = ZonedDateTime.ofInstant(validityEndDate.toInstant(),
                     ZoneId.systemDefault());
 
@@ -182,10 +195,16 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
                     .setSigningKey(caKeyPair.getPrivate())
                     .setPublicKey(caKeyPair.getPublic())
 
-                    .setSerialNumber(serialNumber)
+                    .setSerialNumber(serialNumber);
 
-                    .setSignatureAlgorithmName("SHA256withRSA");
-            
+            switch (caKeyPair.getPrivate().getAlgorithm()){
+                case "EC":
+                    cbuilder.setSignatureAlgorithmName("SHA256withECDSA");
+                    break;
+                default:
+                    cbuilder.setSignatureAlgorithmName("SHA256withRSA");
+            }
+
             return cbuilder.build();
 
         } catch (Exception e) {
@@ -202,6 +221,21 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
         return new X500Principal(subject);
     }
 
+    /**
+     * Builds an {@link X500Principal} with a single CN RDN, encoding the given value directly as the
+     * RDN's attribute value rather than parsing it as part of an RFC 2253 DN string. This allows the
+     * value (e.g. a client ID) to contain characters that would otherwise need escaping, such as '=' or ','.
+     *
+     * @param commonName the raw CN value
+     *
+     * @return the X500Principal with a single CN RDN set to the given value
+     */
+    private static X500Principal cnToX500Principal(String commonName) {
+        return new X500PrincipalBuilder()
+                .addItem(X500AttributeTypeAndValue.createUtf8(X500.OID_AT_COMMON_NAME, commonName))
+                .build();
+    }
+
     @Override
     public List<String> getCertificatePolicyList(X509Certificate cert) throws GeneralSecurityException {
         byte[] policy = cert.getExtensionValue("2.5.29.32");
@@ -211,14 +245,14 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
 
         int type = decPolicy.peekType();
         System.out.println("type " + type);
-        
+
         DERDecoder der = new DERDecoder(decPolicy.decodeOctetString());
 
         List<String> policyList =new ArrayList<>();
 
         while (der.hasNextElement()) {
             switch (der.peekType()) {
-                case ASN1.SEQUENCE_TYPE: 
+                case ASN1.SEQUENCE_TYPE:
                    der.startSequence();
                    break;
                 case ASN1.OBJECT_IDENTIFIER_TYPE:
@@ -247,7 +281,7 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
 
         while ( der.hasNextElement() ) {
             switch (der.peekType()) {
-                case ASN1.SEQUENCE_TYPE: 
+                case ASN1.SEQUENCE_TYPE:
                    der.startSequence();
                    break;
                 case ASN1.UTF8_STRING_TYPE:
@@ -290,22 +324,22 @@ public class ElytronCertificateUtilsProvider implements CertificateUtilsProvider
         try {
             X500Principal subjectdn = subjectToX500Principle(dn);
             X500Principal issuerdn = subjectToX500Principle(dn);
-    
+
             ZonedDateTime notValidBefore = ZonedDateTime.ofInstant(startDate.toInstant(), ZoneId.systemDefault());
             ZonedDateTime notValidAfter = ZonedDateTime.ofInstant(expiryDate.toInstant(), ZoneId.systemDefault());
 
             X509CertificateBuilder cbuilder = new X509CertificateBuilder()
                         .setSubjectDn(subjectdn)
                         .setIssuerDn(issuerdn)
-    
+
                         .setNotValidBefore(notValidBefore)
                         .setNotValidAfter(notValidAfter)
-                        
+
                         .setSigningKey(keyPair.getPrivate())
                         .setPublicKey(keyPair.getPublic())
 
                         .addExtension(createPoliciesExtension(certificatePolicyOid))
-                        
+
                         .setSignatureAlgorithmName("SHA256withRSA");
 
                         return cbuilder.build();

@@ -1,17 +1,20 @@
 import ComponentRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentRepresentation";
 import ComponentTypeRepresentation from "@keycloak/keycloak-admin-client/lib/defs/componentTypeRepresentation";
+import {
+  KeycloakSpinner,
+  useAlerts,
+  useFetch,
+} from "@keycloak/keycloak-ui-shared";
 import { ActionGroup, Button, Form, PageSection } from "@patternfly/react-core";
 import { useState } from "react";
 import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
 import { DynamicComponents } from "../components/dynamic/DynamicComponents";
 import { useRealm } from "../context/realm-context/RealmContext";
-import { useFetch } from "../utils/useFetch";
 import { useParams } from "../utils/useParams";
-import { PAGE_PROVIDER, TAB_PROVIDER } from "./PageList";
+import { PAGE_PROVIDER, TAB_PROVIDER } from "./constants";
 import { toPage } from "./routes";
 
 type PageHandlerProps = {
@@ -34,6 +37,8 @@ export const PageHandler = ({
   const [id, setId] = useState(idAttribute);
   const params = useParams();
 
+  const [isLoading, setIsLoading] = useState(true);
+
   useFetch(
     async () =>
       await Promise.all([
@@ -46,35 +51,39 @@ export const PageHandler = ({
       const tab = (tabs || []).find((t) => t.providerId === providerId);
       form.reset(data || tab || {});
       if (tab) setId(tab.id);
+      setIsLoading(false);
     },
     [],
   );
 
   const onSubmit = async (component: ComponentRepresentation) => {
-    if (component.config || params) {
-      component.config = Object.assign(component.config || {}, params);
-      Object.entries(component.config).forEach(
-        ([key, value]) =>
-          (component.config![key] = Array.isArray(value) ? value : [value]),
-      );
-    }
+    component.config = Object.assign(component.config || {}, params);
+    Object.entries(component.config).forEach(
+      ([key, value]) =>
+        (component.config![key] = Array.isArray(value) ? value : [value]),
+    );
     try {
       const updatedComponent = {
         ...component,
         providerId,
         providerType,
-        parentId: realm?.id,
+        parentId: realm.id,
       };
       if (id) {
         await adminClient.components.update({ id }, updatedComponent);
       } else {
-        await adminClient.components.create(updatedComponent);
+        const { id } = await adminClient.components.create(updatedComponent);
+        setId(id);
       }
-      addAlert("itemSaveSuccessful");
+      addAlert(t("itemSaveSuccessful"));
     } catch (error) {
       addError("itemSaveError", error);
     }
   };
+
+  if (isLoading) {
+    return <KeycloakSpinner />;
+  }
 
   return (
     <PageSection variant="light">
@@ -91,17 +100,28 @@ export const PageHandler = ({
           <Button data-testid="save" type="submit">
             {t("save")}
           </Button>
-          <Button
-            variant="link"
-            component={(props) => (
-              <Link
-                {...props}
-                to={toPage({ realm: realmName, providerId: providerId! })}
-              />
-            )}
-          >
-            {t("cancel")}
-          </Button>
+          {providerType === PAGE_PROVIDER ? (
+            <Button
+              data-testid="cancel"
+              variant="link"
+              component={(props) => (
+                <Link
+                  {...props}
+                  to={toPage({ realm: realmName, providerId: providerId! })}
+                />
+              )}
+            >
+              {t("cancel")}
+            </Button>
+          ) : (
+            <Button
+              data-testid="cancel"
+              variant="link"
+              onClick={() => form.reset()}
+            >
+              {t("revert")}
+            </Button>
+          )}
         </ActionGroup>
       </Form>
     </PageSection>

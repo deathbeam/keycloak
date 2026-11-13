@@ -16,16 +16,6 @@
  */
 package org.keycloak.crypto.fips.test;
 
-import org.junit.ClassRule;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.junit.runners.Parameterized;
-import org.keycloak.common.crypto.CryptoIntegration;
-import org.keycloak.crypto.Algorithm;
-import org.keycloak.crypto.fips.BCFIPSECDSACryptoProvider;
-import org.keycloak.keys.AbstractEcdsaKeyProviderFactory;
-import org.keycloak.rule.CryptoInitRule;
-
 import java.security.InvalidAlgorithmParameterException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -36,6 +26,19 @@ import java.security.interfaces.ECPublicKey;
 import java.security.spec.ECGenParameterSpec;
 import java.util.Arrays;
 import java.util.Collection;
+
+import org.keycloak.common.crypto.CryptoIntegration;
+import org.keycloak.crypto.Algorithm;
+import org.keycloak.crypto.fips.BCFIPSECDSACryptoProvider;
+import org.keycloak.keys.AbstractEcKeyProviderFactory;
+import org.keycloak.keys.GeneratedEcdhKeyProviderFactory;
+import org.keycloak.keys.GeneratedEcdsaKeyProviderFactory;
+import org.keycloak.rule.CryptoInitRule;
+
+import org.junit.ClassRule;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import static org.junit.Assert.assertEquals;
 
@@ -73,8 +76,11 @@ public class BCFIPSECDSACryptoProviderTest {
 
         try {
             KeyPairGenerator kpg = CryptoIntegration.getProvider().getKeyPairGen("ECDSA");
-            String domainParamNistRep = AbstractEcdsaKeyProviderFactory.convertAlgorithmToECDomainParmNistRep(algorithm);
-            String curve = AbstractEcdsaKeyProviderFactory.convertECDomainParmNistRepToSecRep(domainParamNistRep);
+            String domainParamNistRep = GeneratedEcdsaKeyProviderFactory.convertJWSAlgorithmToECDomainParmNistRep(algorithm);
+            if (domainParamNistRep == null) {
+                domainParamNistRep = GeneratedEcdhKeyProviderFactory.convertJWEAlgorithmToECDomainParmNistRep(algorithm);
+            }
+            String curve = AbstractEcKeyProviderFactory.convertECDomainParmNistRepToSecRep(domainParamNistRep);
             ECGenParameterSpec parameterSpec = new ECGenParameterSpec(curve);
             kpg.initialize(parameterSpec);
             return kpg.generateKeyPair();

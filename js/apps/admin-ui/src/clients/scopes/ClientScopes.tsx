@@ -1,4 +1,5 @@
 import type ClientScopeRepresentation from "@keycloak/keycloak-admin-client/lib/defs/clientScopeRepresentation";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import {
   AlertVariant,
   Button,
@@ -22,7 +23,6 @@ import {
   nameFilter,
   typeFilter,
 } from "../../client-scopes/details/SearchFilter";
-import { useAlerts } from "../../components/alert/Alerts";
 import {
   AllClientScopeType,
   AllClientScopes,
@@ -30,20 +30,21 @@ import {
   ClientScope,
   addClientScope,
   changeClientScope,
+  ParameterizedScopeLabel,
+  isParameterizedScope,
   removeClientScope,
 } from "../../components/client-scope/ClientScopeTypes";
 import { useConfirmDialog } from "../../components/confirm-dialog/ConfirmDialog";
-import { ListEmptyState } from "../../components/list-empty-state/ListEmptyState";
-import {
-  Action,
-  KeycloakDataTable,
-} from "../../components/table-toolbar/KeycloakDataTable";
+import { ListEmptyState } from "@keycloak/keycloak-ui-shared";
+import { Action, KeycloakDataTable } from "@keycloak/keycloak-ui-shared";
 import { useAccess } from "../../context/access/Access";
 import { useRealm } from "../../context/realm-context/RealmContext";
+import { translationFormatter } from "../../utils/translationFormatter";
 import useLocaleSort, { mapByKey } from "../../utils/useLocaleSort";
-import { translationFormatter } from "../ClientsSection";
 import { toDedicatedScope } from "../routes/DedicatedScopeDetails";
 import { AddScopeDialog } from "./AddScopeDialog";
+import useIsFeatureEnabled, { Feature } from "../../utils/useIsFeatureEnabled";
+import { PROTOCOL_OIDC, PROTOCOL_OID4VC } from "../constants";
 
 import "./client-scopes.css";
 
@@ -63,14 +64,14 @@ const DEDICATED_ROW = "dedicated";
 
 type TypeSelectorProps = Row & {
   clientId: string;
-  fineGrainedAccess?: boolean;
+  canManageClientScopes: boolean;
   refresh: () => void;
 };
 
 const TypeSelector = ({
   clientId,
   refresh,
-  fineGrainedAccess,
+  canManageClientScopes,
   ...scope
 }: TypeSelectorProps) => {
   const { adminClient } = useAdminClient();
@@ -78,14 +79,11 @@ const TypeSelector = ({
   const { t } = useTranslation();
   const { addAlert, addError } = useAlerts();
 
-  const { hasAccess } = useAccess();
-
   const isDedicatedRow = (value: Row) => value.id === DEDICATED_ROW;
-  const isManager = hasAccess("manage-clients") || fineGrainedAccess;
 
   return (
     <CellDropdown
-      isDisabled={isDedicatedRow(scope) || !isManager}
+      isDisabled={isDedicatedRow(scope) || !canManageClientScopes}
       clientScope={scope}
       type={scope.type}
       onSelect={async (value) => {
@@ -114,6 +112,7 @@ export const ClientScopes = ({
   fineGrainedAccess,
 }: ClientScopesProps) => {
   const { adminClient } = useAdminClient();
+  const isFeatureEnabled = useIsFeatureEnabled();
 
   const { t } = useTranslation();
   const { addAlert, addError } = useAlerts();
@@ -139,7 +138,7 @@ export const ClientScopes = ({
   const isDedicatedRow = (value: Row) => value.id === DEDICATED_ROW;
 
   const { hasAccess } = useAccess();
-  const isManager = hasAccess("manage-clients") || fineGrainedAccess;
+  const isManager = !!fineGrainedAccess;
   const isViewer = hasAccess("view-clients") || fineGrainedAccess;
 
   const loader = async (first?: number, max?: number, search?: string) => {
@@ -147,38 +146,39 @@ export const ClientScopes = ({
       await adminClient.clients.listDefaultClientScopes({ id: clientId });
     const optionalClientScopes =
       await adminClient.clients.listOptionalClientScopes({ id: clientId });
-    const clientScopes = await adminClient.clientScopes.find();
+    const clientScopes = isManager
+      ? await adminClient.clients.listAvailableClientScopes({ id: clientId })
+      : [];
 
-    const find = (id: string) =>
-      clientScopes.find((clientScope) => id === clientScope.id);
+    const optional = optionalClientScopes.map<Row>((scope) => ({
+      ...scope,
+      type: ClientScope.optional,
+    }));
 
-    const optional = optionalClientScopes.map((c) => {
-      const scope = find(c.id!);
-      const row: Row = {
-        ...c,
-        type: ClientScope.optional,
-        description: scope?.description,
-      };
-      return row;
-    });
-
-    const defaultScopes = defaultClientScopes.map((c) => {
-      const scope = find(c.id!);
-      const row: Row = {
-        ...c,
-        type: ClientScope.default,
-        description: scope?.description,
-      };
-      return row;
-    });
+    const defaultScopes = defaultClientScopes.map<Row>((scope) => ({
+      ...scope,
+      type: ClientScope.default,
+    }));
 
     let rows = [...optional, ...defaultScopes];
     const names = rows.map((row) => row.name);
 
+    const allowedProtocols = (() => {
+      if (protocol === PROTOCOL_OIDC) {
+        return isFeatureEnabled(Feature.OpenId4VCI)
+          ? [PROTOCOL_OIDC, PROTOCOL_OID4VC]
+          : [PROTOCOL_OIDC];
+      }
+      return [protocol];
+    })();
+
     setRest(
       clientScopes
         .filter((scope) => !names.includes(scope.name))
-        .filter((scope) => scope.protocol === protocol),
+        .filter(
+          (scope) =>
+            scope.protocol && allowedProtocols.includes(scope.protocol),
+        ),
     );
 
     rows = localeSort(rows, mapByKey("name"));
@@ -225,7 +225,7 @@ export const ClientScopes = ({
 
   return (
     <>
-      {rest && (
+      {isManager && rest && (
         <AddScopeDialog
           clientScopes={rest}
           clientName={clientName!}
@@ -256,7 +256,7 @@ export const ClientScopes = ({
       <KeycloakDataTable
         key={key}
         loader={loader}
-        ariaLabelKey={`clientScopeList-${key}`}
+        ariaLabelKey="clientScopeList"
         searchPlaceholderKey={
           searchType === "name" ? "searchByName" : undefined
         }
@@ -298,6 +298,7 @@ export const ClientScopes = ({
                 </ToolbarItem>
                 <ToolbarItem>
                   <Dropdown
+                    onOpenChange={(isOpen) => setKebabOpen(isOpen)}
                     toggle={(ref) => (
                       <MenuToggle
                         data-testid="kebab"
@@ -359,14 +360,24 @@ export const ClientScopes = ({
                   </Link>
                 );
               }
-              return row.name!;
+              return (
+                <>
+                  {row.name}{" "}
+                  {isParameterizedScope(row) && <ParameterizedScopeLabel />}
+                </>
+              );
             },
           },
           {
             name: "type",
             displayKey: "assignedType",
             cellRenderer: (row) => (
-              <TypeSelector clientId={clientId} refresh={refresh} {...row} />
+              <TypeSelector
+                clientId={clientId}
+                refresh={refresh}
+                {...row}
+                canManageClientScopes={isManager}
+              />
             ),
           },
           { name: "description", cellFormatters: [translationFormatter(t)] },
@@ -389,7 +400,9 @@ export const ClientScopes = ({
           <ListEmptyState
             message={t("emptyClientScopes")}
             instructions={t("emptyClientScopesInstructions")}
-            primaryActionText={t("emptyClientScopesPrimaryAction")}
+            primaryActionText={
+              isManager ? t("emptyClientScopesPrimaryAction") : undefined
+            }
             onPrimaryAction={() => setAddDialogOpen(true)}
           />
         }

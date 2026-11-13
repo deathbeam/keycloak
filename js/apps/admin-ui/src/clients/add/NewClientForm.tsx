@@ -10,7 +10,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useAdminClient } from "../../admin-client";
-import { useAlerts } from "../../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { FormAccess } from "../../components/form/FormAccess";
 import { ViewHeader } from "../../components/view-header/ViewHeader";
 import { useRealm } from "../../context/realm-context/RealmContext";
@@ -32,7 +32,7 @@ const NewClientFooter = (newClientForm: any) => {
     if (!(await trigger())) {
       return;
     }
-    onNext?.();
+    onNext();
   };
 
   return (
@@ -68,7 +68,7 @@ export default function NewClientForm() {
       authorizationServicesEnabled: false,
       serviceAccountsEnabled: false,
       implicitFlowEnabled: false,
-      directAccessGrantsEnabled: true,
+      directAccessGrantsEnabled: false,
       standardFlowEnabled: true,
       frontchannelLogout: true,
       attributes: {
@@ -89,7 +89,9 @@ export default function NewClientForm() {
         clientId: client.clientId?.trim(),
       });
       addAlert(t("createClientSuccess"), AlertVariant.success);
-      navigate(toClient({ realm, clientId: newClient.id, tab: "settings" }));
+      void navigate(
+        toClient({ realm, clientId: newClient.id, tab: "settings" }),
+      );
     } catch (error) {
       addError("createClientError", error);
     } finally {
@@ -104,9 +106,10 @@ export default function NewClientForm() {
       <PageSection variant="light">
         <FormProvider {...form}>
           <Wizard
-            onClose={() => navigate(toClients({ realm }))}
+            onClose={() => void navigate(toClients({ realm }))}
             navAriaLabel={`${title} steps`}
             onSave={save}
+            isProgressive
             footer={<NewClientFooter {...form} />}
           >
             <WizardStep

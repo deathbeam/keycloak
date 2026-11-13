@@ -13,6 +13,7 @@ import {
   FieldValues,
   useFormContext,
 } from "react-hook-form";
+import { getRuleValue } from "../../utils/getRuleValue";
 import { FormLabel } from "../FormLabel";
 import {
   SelectControlProps,
@@ -29,8 +30,12 @@ export const SingleSelectControl = <
   name,
   label,
   options,
+  selectedOptions = [],
   controller,
   labelIcon,
+  isDisabled,
+  isFullWidth = true,
+  onSelect,
   ...rest
 }: SelectControlProps<T, P>) => {
   const {
@@ -38,12 +43,14 @@ export const SingleSelectControl = <
     formState: { errors },
   } = useFormContext();
   const [open, setOpen] = useState(false);
+  const required = getRuleValue(controller.rules?.required) === true;
 
   return (
     <FormLabel
+      id={id}
       name={name}
       label={label}
-      isRequired={!!controller.rules?.required}
+      isRequired={required}
       error={get(errors, name)}
       labelIcon={labelIcon}
     >
@@ -54,6 +61,7 @@ export const SingleSelectControl = <
         render={({ field: { onChange, value } }) => (
           <Select
             {...rest}
+            variant="default"
             onClick={() => setOpen(!open)}
             onOpenChange={() => setOpen(false)}
             selected={
@@ -69,13 +77,14 @@ export const SingleSelectControl = <
             }
             toggle={(ref) => (
               <MenuToggle
-                id={id || name.slice(name.lastIndexOf(".") + 1)}
+                id={id || name}
                 ref={ref}
                 onClick={() => setOpen(!open)}
                 isExpanded={open}
-                isFullWidth
+                isFullWidth={isFullWidth}
                 status={get(errors, name) ? MenuToggleStatus.danger : undefined}
-                aria-label="toggle"
+                aria-label={label}
+                isDisabled={isDisabled}
               >
                 {isSelectBasedOptions(options)
                   ? options.find(
@@ -86,15 +95,28 @@ export const SingleSelectControl = <
               </MenuToggle>
             )}
             onSelect={(_event, v) => {
-              const option = v?.toString();
-              onChange(Array.isArray(value) ? [option] : option);
+              const option = v?.toString()!;
+              const convertedValue = Array.isArray(value) ? [option] : option;
+              if (onSelect) {
+                onSelect(convertedValue, onChange);
+              } else {
+                onChange(convertedValue);
+              }
               setOpen(false);
             }}
             isOpen={open}
           >
-            <SelectList>
-              {options.map((option) => (
-                <SelectOption key={key(option)} value={key(option)}>
+            <SelectList data-testid={`select-${name}`}>
+              {[...options, ...selectedOptions].map((option) => (
+                <SelectOption
+                  key={key(option)}
+                  value={key(option)}
+                  description={
+                    !isString(option) && "description" in option
+                      ? option.description
+                      : undefined
+                  }
+                >
                   {isString(option) ? option : option.value}
                 </SelectOption>
               ))}

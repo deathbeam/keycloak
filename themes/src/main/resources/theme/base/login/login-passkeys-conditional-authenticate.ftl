@@ -1,9 +1,12 @@
 <#import "template.ftl" as layout>
+<#import "field.ftl" as field>
+<#import "buttons.ftl" as buttons>
 <@layout.registrationLayout displayInfo=(realm.registrationAllowed && !registrationDisabled??); section>
+<!-- template: login-passkeys-conditional-authenticate.ftl -->
     <#if section = "title">
      title
     <#elseif section = "header">
-        ${kcSanitize(msg("passkey-login-title"))?no_esc}
+        ${msg("passkey-login-title")}
     <#elseif section = "form">
         <form id="webauth" action="${url.loginAction}" method="post">
             <input type="hidden" id="clientDataJSON" name="clientDataJSON"/>
@@ -24,7 +27,7 @@
 
                 <#if shouldDisplayAuthenticators?? && shouldDisplayAuthenticators>
                     <#if authenticators.authenticators?size gt 1>
-                        <p class="${properties.kcSelectAuthListItemTitle!}">${kcSanitize(msg("passkey-available-authenticators"))?no_esc}</p>
+                        <p class="${properties.kcSelectAuthListItemTitle!}">${msg("passkey-available-authenticators")}</p>
                     </#if>
 
                     <div class="${properties.kcFormClass!}">
@@ -36,14 +39,14 @@
                                 <div class="${properties.kcSelectAuthListItemBodyClass!}">
                                     <div id="kc-webauthn-authenticator-label-${authenticator?index}"
                                          class="${properties.kcSelectAuthListItemHeadingClass!}">
-                                        ${kcSanitize(msg('${authenticator.label}'))?no_esc}
+                                        ${authenticator.label}
                                     </div>
 
                                     <#if authenticator.transports?? && authenticator.transports.displayNameProperties?has_content>
                                         <div id="kc-webauthn-authenticator-transport-${authenticator?index}"
                                             class="${properties.kcSelectAuthListItemDescriptionClass!}">
                                             <#list authenticator.transports.displayNameProperties as nameProperty>
-                                                <span>${kcSanitize(msg('${nameProperty!}'))?no_esc}</span>
+                                                <span>${msg(nameProperty)}</span>
                                                 <#if nameProperty?has_next>
                                                     <span>, </span>
                                                 </#if>
@@ -53,10 +56,10 @@
 
                                     <div class="${properties.kcSelectAuthListItemDescriptionClass!}">
                                         <span id="kc-webauthn-authenticator-createdlabel-${authenticator?index}">
-                                            ${kcSanitize(msg('passkey-createdAt-label'))?no_esc}
+                                            ${msg('passkey-createdAt-label')}
                                         </span>
                                         <span id="kc-webauthn-authenticator-created-${authenticator?index}">
-                                            ${kcSanitize(authenticator.createdAt)?no_esc}
+                                            ${authenticator.createdAt}
                                         </span>
                                     </div>
                                 </div>
@@ -70,34 +73,15 @@
             <div id="kc-form">
                 <div id="kc-form-wrapper">
                     <#if realm.password>
-                        <form id="kc-form-login" onsubmit="login.disabled = true; return true;" action="${url.loginAction}" method="post" style="display:none">
+                        <form id="kc-form-login" class="${properties.kcFormClass!}" onsubmit="login.disabled = true; return true;" action="${url.loginAction}" method="post" style="display:none">
                             <#if !usernameHidden??>
-                                <div class="${properties.kcFormGroupClass!}">
-                                    <label for="username" class="${properties.kcLabelClass!}">${msg("passkey-autofill-select")}</label>
-                                    <input tabindex="1" id="username"
-                                        aria-invalid="<#if messagesPerField.existsError('username')>true</#if>"
-                                        class="${properties.kcInputClass!}" name="username"
-                                        value="${(login.username!'')}"
-                                        autocomplete="username webauthn"
-                                        type="text" autofocus autocomplete="off"
-                                        dir="ltr"/>
-                                    <#if messagesPerField.existsError('username')>
-                                        <span id="input-error-username" class="${properties.kcInputErrorMessageClass!}" aria-live="polite">
-                                            ${kcSanitize(messagesPerField.get('username'))?no_esc}
-                                        </span>
-                                    </#if>
-                                </div>
+                                <@field.input name="username" label=msg("passkey-autofill-select") value=login.username!'' autofocus=true autocomplete="username webauthn" />
                             </#if>
                         </form>
                     </#if>
                     <div id="kc-form-passkey-button" class="${properties.kcFormButtonsClass!}" style="display:none">
-                        <input id="authenticateWebAuthnButton" type="button" onclick="doAuthenticate([], "${rpId}", "${challenge}", ${isUserIdentified}, ${createTimeout}, "${userVerification}", "${msg("passkey-unsupported-browser-text")?no_esc}")" autofocus="autofocus"
-                            value="${kcSanitize(msg("passkey-doAuthenticate"))}"
-                            class="${properties.kcButtonClass!} ${properties.kcButtonPrimaryClass!} ${properties.kcButtonBlockClass!} ${properties.kcButtonLargeClass!}"/>
-                    </div>
-                    <div id="kc-form-passkey-button" class="${properties.kcFormButtonsClass!}" style="display:none">
                         <input id="authenticateWebAuthnButton" type="button" autofocus="autofocus"
-                            value="${kcSanitize(msg("passkey-doAuthenticate"))}"
+                            value="${msg("passkey-doAuthenticate")}"
                             class="${properties.kcButtonClass!} ${properties.kcButtonPrimaryClass!} ${properties.kcButtonBlockClass!} ${properties.kcButtonLargeClass!}"/>
                     </div>
                 </div>
@@ -105,32 +89,40 @@
         </div>
 
         <script type="module">
+            <#outputformat "JavaScript">
             import { authenticateByWebAuthn } from "${url.resourcesPath}/js/webauthnAuthenticate.js";
             import { initAuthenticate } from "${url.resourcesPath}/js/passkeysConditionalAuth.js";
 
             const authButton = document.getElementById('authenticateWebAuthnButton');
             const input = {
                 isUserIdentified : ${isUserIdentified},
-                challenge : '${challenge}',
-                userVerification : '${userVerification}',
-                rpId : '${rpId}',
-                createTimeout : ${createTimeout},
-                errmsg : "${msg("webauthn-unsupported-browser-text")?no_esc}"
+                challenge : ${challenge?c},
+                userVerification : ${userVerification?c},
+                rpId : ${rpId?c},
+                createTimeout : ${createTimeout?c},
+                errmsg : ${msg("webauthn-unsupported-browser-text")?c}
             };
             authButton.addEventListener("click", () => {
                 authenticateByWebAuthn(input);
-            });
+            }, { once: true });
 
             const args = {
                 isUserIdentified : ${isUserIdentified},
-                challenge : '${challenge}',
-                userVerification : '${userVerification}',
-                rpId : '${rpId}',
-                createTimeout : ${createTimeout},
-                errmsg : "${msg("passkey-unsupported-browser-text")?no_esc}"
+                challenge : ${challenge?c},
+                userVerification : ${userVerification?c},
+                rpId : ${rpId?c},
+                createTimeout : ${createTimeout?c},
+                errmsg : ${msg("passkey-unsupported-browser-text")?c}
             };
 
-            document.addEventListener("DOMContentLoaded", (event) => initAuthenticate(args));
+            document.addEventListener("DOMContentLoaded", (event) => initAuthenticate(args, (available) => {
+                if (available) {
+                    document.getElementById("kc-form-login").style.display = "block";
+                } else {
+                    document.getElementById("kc-form-passkey-button").style.display = 'block';
+                }
+            }));
+            </#outputformat>
         </script>
 
     <#elseif section = "info">

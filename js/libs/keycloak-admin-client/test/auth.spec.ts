@@ -42,6 +42,11 @@ describe("Authorization", () => {
       "idToken",
     );
 
-    expect(data.scope).to.equal("openid email profile");
+    expect(data.scope.split(" ")).to.have.members([
+      "openid",
+      "email",
+      "profile",
+      "kc-admin-api",
+    ]);
   });
 });

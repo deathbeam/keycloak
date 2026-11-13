@@ -16,28 +16,27 @@
  */
 package org.keycloak.services.managers;
 
-import java.net.URI;
 import java.util.Collections;
-import java.util.Objects;
 import java.util.Set;
 import javax.naming.ldap.LdapContext;
 
-import org.jboss.logging.Logger;
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.component.ComponentModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.LDAPConstants;
 import org.keycloak.models.RealmModel;
 import org.keycloak.representations.idm.ComponentRepresentation;
+import org.keycloak.representations.idm.LDAPCapabilityRepresentation;
 import org.keycloak.representations.idm.TestLdapConnectionRepresentation;
 import org.keycloak.services.ServicesLogger;
 import org.keycloak.storage.ldap.LDAPConfig;
-import org.keycloak.representations.idm.LDAPCapabilityRepresentation;
-import org.keycloak.storage.ldap.idm.model.LDAPDn;
 import org.keycloak.storage.ldap.idm.store.ldap.LDAPContextManager;
 import org.keycloak.storage.ldap.idm.store.ldap.LDAPIdentityStore;
+import org.keycloak.storage.ldap.idm.store.ldap.LDAPUtil;
 import org.keycloak.storage.ldap.mappers.membership.group.GroupTreeResolver;
 import org.keycloak.utils.StringUtil;
+
+import org.jboss.logging.Logger;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -67,16 +66,20 @@ public class LDAPServerCapabilitiesManager {
 
     public static LDAPConfig buildLDAPConfig(TestLdapConnectionRepresentation config, RealmModel realm) {
         String bindCredential = config.getBindCredential();
-        if (config.getComponentId() != null && !LDAPConstants.AUTH_TYPE.equals(LDAPConstants.AUTH_TYPE_NONE)
+        if (config.getComponentId() != null && !LDAPConstants.AUTH_TYPE_NONE.equals(config.getAuthType())
                 && ComponentRepresentation.SECRET_VALUE.equals(bindCredential)) {
             // check the connection URL and the bind DN are the same to allow using the same configured password
             ComponentModel component = realm.getComponent(config.getComponentId());
             if (component != null) {
                 LDAPConfig ldapConfig = new LDAPConfig(component.getConfig());
-                if (Objects.equals(URI.create(config.getConnectionUrl()), URI.create(ldapConfig.getConnectionUrl()))
-                        && Objects.equals(LDAPDn.fromString(config.getBindDn()), LDAPDn.fromString(ldapConfig.getBindDN()))) {
+                if (LDAPUtil.checkLdapConnectionUrlsMatch(config.getConnectionUrl(), ldapConfig.getConnectionUrl())
+                        && config.getBindDn() != null && config.getBindDn().equalsIgnoreCase(ldapConfig.getBindDN())) {
                     bindCredential = ldapConfig.getBindCredential();
                 }
+            }
+            if (ComponentRepresentation.SECRET_VALUE.equals(bindCredential)) {
+                throw new CredentialReentryRequiredException(
+                        "Bind credentials must be re-entered when the Connection URL or Bind DN is changed");
             }
         }
         MultivaluedHashMap<String, String> configMap = new MultivaluedHashMap<>();
@@ -112,6 +115,12 @@ public class LDAPServerCapabilitiesManager {
         }
     }
 
+    public static class CredentialReentryRequiredException extends RuntimeException {
+        public CredentialReentryRequiredException(String s) {
+            super(s);
+        }
+    }
+
     public static String getErrorCode(Throwable throwable) {
         String errorMsg = "UnknownError";
         if (throwable instanceof javax.naming.NamingException)
@@ -128,6 +137,8 @@ public class LDAPServerCapabilitiesManager {
              errorMsg = "ServiceUnavailable";
         if (throwable instanceof InvalidBindDNException)
              errorMsg = "InvalidBindDN";
+        if (throwable instanceof CredentialReentryRequiredException)
+             errorMsg = "CredentialReentryRequired";
         if (throwable instanceof javax.naming.NameNotFoundException)
              errorMsg = "NameNotFound";
         if (throwable instanceof GroupTreeResolver.GroupTreeResolveException) {
@@ -177,8 +188,8 @@ public class LDAPServerCapabilitiesManager {
         // is not needed anymore
         try (LDAPContextManager ldapContextManager = LDAPContextManager.create(session, ldapConfig)) {
             LdapContext ldapContext = ldapContextManager.getLdapContext();
-            if (TEST_AUTHENTICATION.equals(config.getAction()) && LDAPConstants.AUTH_TYPE_NONE.equals(config.getAuthType())) {
-                // reconnect to force an anonymous bind operation
+            if (TEST_AUTHENTICATION.equals(config.getAction())) {
+                // Reconnect to force bind operation.
                 ldapContext.reconnect(null);
             }
         } catch (Exception ne) {

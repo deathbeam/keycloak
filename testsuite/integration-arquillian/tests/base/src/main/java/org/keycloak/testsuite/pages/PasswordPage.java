@@ -1,9 +1,9 @@
 package org.keycloak.testsuite.pages;
 
-import org.jboss.arquillian.test.api.ArquillianResource;
-import org.keycloak.testsuite.util.OAuthClient;
 import org.keycloak.testsuite.util.UIUtils;
-import org.openqa.selenium.By;
+import org.keycloak.testsuite.util.oauth.OAuthClient;
+
+import org.jboss.arquillian.test.api.ArquillianResource;
 import org.openqa.selenium.NoSuchElementException;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.support.FindBy;
@@ -27,22 +27,14 @@ public class PasswordPage extends LanguageComboboxAwarePage {
     @FindBy(name = "login")
     private WebElement submitButton;
 
-    @FindBy(className = "alert-error")
+    @FindBy(css = "div[class^='pf-v6-c-alert'], div[class^='alert-error']")
     private WebElement loginErrorMessage;
-
-    @FindBy(linkText = "Forgot Password?")
-    private WebElement resetPasswordLink;
-
 
     public void login(String password) {
         passwordInput.clear();
         passwordInput.sendKeys(password);
 
-        submitButton.click();
-    }
-
-    public void clickResetPassword() {
-        resetPasswordLink.click();
+        UIUtils.clickLink(submitButton);
     }
 
     public String getPassword() {
@@ -65,35 +57,8 @@ public class PasswordPage extends LanguageComboboxAwarePage {
         }
     }
 
-
-    public boolean isCurrent() {
-        String realm = "test";
-        return isCurrent(realm);
-    }
-
-    public boolean isCurrent(String realm) {
-        // Check there is NO username field
-        try {
-            driver.findElement(By.id("username"));
-            return false;
-        } catch (NoSuchElementException nfe) {
-            // Expected
-        }
-
-        // Check there is password field
-        try {
-            driver.findElement(By.id("kc-attempted-username"));
-            driver.findElement(By.id("password"));
-        } catch (NoSuchElementException nfe) {
-            return false;
-        }
-
-        return true;
-    }
-
-
     @Override
-    public void open() throws Exception {
-        throw new UnsupportedOperationException();
+    public String getExpectedPageId() {
+        return "login-login-password";
     }
 }

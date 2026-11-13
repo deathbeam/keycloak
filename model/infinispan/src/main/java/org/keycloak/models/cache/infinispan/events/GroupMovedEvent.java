@@ -20,12 +20,13 @@ package org.keycloak.models.cache.infinispan.events;
 import java.util.Objects;
 import java.util.Set;
 
-import org.infinispan.protostream.annotations.ProtoFactory;
-import org.infinispan.protostream.annotations.ProtoField;
-import org.infinispan.protostream.annotations.ProtoTypeId;
 import org.keycloak.marshalling.Marshalling;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.cache.infinispan.RealmCacheManager;
+
+import org.infinispan.protostream.annotations.ProtoFactory;
+import org.infinispan.protostream.annotations.ProtoField;
+import org.infinispan.protostream.annotations.ProtoTypeId;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -49,11 +50,11 @@ public class GroupMovedEvent extends InvalidationEvent implements RealmCacheInva
 
     @ProtoFactory
     static GroupMovedEvent protoFactory(String id, String newParentId, String oldParentId, String realmId) {
-        return new GroupMovedEvent(id, Marshalling.emptyStringToNull(newParentId), Marshalling.emptyStringToNull(oldParentId), realmId);
+        return new GroupMovedEvent(id, newParentId, oldParentId, realmId);
     }
 
     public static GroupMovedEvent create(GroupModel group, GroupModel toParent, String realmId) {
-        return new GroupMovedEvent(group.getId(), group.getId(), toParent == null ? null : toParent.getId(), realmId);
+        return new GroupMovedEvent(group.getId(), toParent == null ? null : toParent.getId(), group.getParentId(), realmId);
     }
 
     @Override

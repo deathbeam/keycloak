@@ -16,7 +16,6 @@
  */
 package org.keycloak.client.cli.util;
 
-import java.io.Console;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -38,6 +37,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.ListIterator;
 import java.util.Set;
+
+import org.keycloak.common.util.StreamUtil;
 
 import static java.nio.file.Files.createDirectories;
 import static java.nio.file.Files.createFile;
@@ -65,31 +66,12 @@ public class IoUtil {
         return content;
     }
 
-    public static String readSecret(String prompt) {
-        Console cons = System.console();
-        if (cons == null) {
-            throw new RuntimeException("Console is not active, but a password is required");
-        }
-        char[] passwd;
-        if ((passwd = cons.readPassword("%s", prompt)) != null) {
-            return new String(passwd);
-        }
-        throw new RuntimeException("No password provided");
-    }
-
     public static String readFully(InputStream is) {
-        StringBuilder out = new StringBuilder();
-        byte [] buf = new byte[8192];
-
-        int rc;
         try {
-            while ((rc = is.read(buf)) != -1) {
-                out.append(new String(buf, 0, rc, StandardCharsets.UTF_8));
-            }
+            return StreamUtil.readString(is, StandardCharsets.UTF_8);
         } catch (Exception e) {
             throw new RuntimeException("Failed to read stream", e);
         }
-        return out.toString();
     }
 
     public static void copyStream(InputStream is, OutputStream os) {
@@ -129,16 +111,17 @@ public class IoUtil {
                 warnErr("Failed to restrict access permissions on .keycloak directory: " + parent);
             }
         }
+
         if (!isRegularFile(path)) {
             createFile(path);
-            // make sure only owner can read/write it
-            if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
-                setUnixPermissions(path);
-            } else if (supportedViews.contains("acl")) {
-                setWindowsPermissions(path);
-            } else {
-                warnErr("Failed to restrict access permissions on config file: " + path);
-            }
+        }
+        // make sure only owner can read/write it
+        if (supportedViews.contains("posix")) {
+            setUnixPermissions(path);
+        } else if (supportedViews.contains("acl")) {
+            setWindowsPermissions(path);
+        } else {
+            warnErr("Failed to restrict access permissions on config file: " + path);
         }
     }
 

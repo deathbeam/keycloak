@@ -1,12 +1,12 @@
 package org.keycloak.client.registration.cli.commands;
 
-import org.keycloak.client.cli.config.RealmConfigData;
-import org.keycloak.client.cli.util.IoUtil;
-import org.keycloak.client.registration.cli.CmdStdinContext;
-import org.keycloak.client.registration.cli.KcRegMain;
-
 import java.io.PrintWriter;
 import java.io.StringWriter;
+
+import org.keycloak.client.cli.config.RealmConfigData;
+import org.keycloak.client.registration.cli.CmdStdinContext;
+import org.keycloak.client.registration.cli.KcRegMain;
+import org.keycloak.common.util.IoUtils;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
@@ -64,7 +64,7 @@ public class ConfigInitialTokenCmd extends AbstractAuthOptionsCmd {
         }
 
         if (!delete && token == null) {
-            token = IoUtil.readSecret("Enter Initial Access Token: ");
+            token = IoUtils.readPasswordFromConsole("Initial Access Token");
         }
 
         // now update the config

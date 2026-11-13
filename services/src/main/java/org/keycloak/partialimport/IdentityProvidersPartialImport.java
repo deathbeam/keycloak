@@ -17,15 +17,15 @@
 
 package org.keycloak.partialimport;
 
-import org.keycloak.models.IdentityProviderModel;
+import java.util.List;
+
 import org.keycloak.models.KeycloakSession;
+import org.keycloak.models.ModelValidationException;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.models.utils.RepresentationToModel;
 import org.keycloak.representations.idm.IdentityProviderRepresentation;
 import org.keycloak.representations.idm.PartialImportRepresentation;
-
-import java.util.List;
 
 /**
  * PartialImport handler for Identity Providers.
@@ -46,12 +46,12 @@ public class IdentityProvidersPartialImport extends AbstractPartialImport<Identi
 
     @Override
     public String getModelId(RealmModel realm, KeycloakSession session, IdentityProviderRepresentation idpRep) {
-        return realm.getIdentityProviderByAlias(getName(idpRep)).getInternalId();
+        return session.identityProviders().getByAlias(getName(idpRep)).getInternalId();
     }
 
     @Override
     public boolean exists(RealmModel realm, KeycloakSession session, IdentityProviderRepresentation idpRep) {
-        return realm.getIdentityProviderByAlias(getName(idpRep)) != null;
+        return session.identityProviders().getByAlias(getName(idpRep)) != null;
     }
 
     @Override
@@ -66,14 +66,19 @@ public class IdentityProvidersPartialImport extends AbstractPartialImport<Identi
 
     @Override
     public void remove(RealmModel realm, KeycloakSession session, IdentityProviderRepresentation idpRep) {
-        realm.removeIdentityProviderByAlias(getName(idpRep));
+        session.identityProviders().remove(getName(idpRep));
     }
 
     @Override
     public void create(RealmModel realm, KeycloakSession session, IdentityProviderRepresentation idpRep) {
         idpRep.setInternalId(KeycloakModelUtils.generateId());
-        IdentityProviderModel identityProvider = RepresentationToModel.toModel(realm, idpRep, session);
-        realm.addIdentityProvider(identityProvider);
+        try {
+            session.identityProviders().create(RepresentationToModel.toModel(realm, idpRep, session));
+        } catch (IllegalArgumentException e) {
+            // Partial import carries no version, so legacy configurations are not migrated here. Report the
+            // problem to the caller instead of failing as an internal server error.
+            throw new ModelValidationException("Invalid configuration for identity provider '" + getName(idpRep) + "': " + e.getMessage());
+        }
     }
 
 }

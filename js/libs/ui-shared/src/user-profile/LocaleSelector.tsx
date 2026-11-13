@@ -6,7 +6,7 @@ import { UserProfileFieldProps } from "./UserProfileFields";
 const localeToDisplayName = (locale: string) => {
   try {
     return new Intl.DisplayNames([locale], { type: "language" }).of(locale);
-  } catch (error) {
+  } catch {
     return locale;
   }
 };
@@ -43,7 +43,7 @@ export const LocaleSelector = ({
         name="attributes.locale"
         label={t("selectALocale")}
         controller={{ defaultValue: "" }}
-        options={locales}
+        options={[{ key: "", value: t("defaultLocale") }, ...locales]}
         variant={locales.length >= 10 ? "typeahead" : "single"}
       />
     </FormProvider>

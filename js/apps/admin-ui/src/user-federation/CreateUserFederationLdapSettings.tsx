@@ -3,7 +3,7 @@ import { FormProvider, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { useRealm } from "../context/realm-context/RealmContext";
 import {
   LdapComponentRepresentation,
@@ -26,7 +26,7 @@ export default function CreateUserFederationLdapSettings() {
     try {
       await adminClient.components.create(serializeFormData(formData));
       addAlert(t("createUserProviderSuccess"), AlertVariant.success);
-      navigate(toUserFederation({ realm }));
+      void navigate(toUserFederation({ realm }));
     } catch (error) {
       addError("createUserProviderError", error);
     }

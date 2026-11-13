@@ -16,38 +16,85 @@
  */
 package test.org.keycloak.quarkus.services.health;
 
-import io.agroal.api.AgroalDataSource;
-import io.quarkus.test.QuarkusUnitTest;
-import io.restassured.RestAssured;
-import org.hamcrest.Matchers;
-import org.jboss.shrinkwrap.api.ShrinkWrap;
-import org.jboss.shrinkwrap.api.spec.JavaArchive;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.extension.RegisterExtension;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
 
-import jakarta.inject.Inject;
+import org.keycloak.quarkus.runtime.services.health.KeycloakReadyHealthCheck;
+
+import io.quarkus.agroal.runtime.health.DataSourceHealthCheck;
+import io.quarkus.test.InjectMock;
+import io.quarkus.test.junit.QuarkusTest;
+import io.quarkus.test.junit.TestProfile;
+import io.restassured.RestAssured;
+import org.eclipse.microprofile.health.HealthCheckResponse;
+import org.hamcrest.Matchers;
+import org.junit.jupiter.api.Test;
+import org.mockito.Mockito;
 
 import static io.restassured.RestAssured.given;
 
+@QuarkusTest
+@TestProfile(MetricsEnabledProfile.class)
 public class KeycloakNegativeHealthCheckTest {
 
-    @Inject
-    AgroalDataSource agroalDataSource;
-
-    @RegisterExtension
-    static final QuarkusUnitTest test = new QuarkusUnitTest()
-            .setArchiveProducer(() -> ShrinkWrap.create(JavaArchive.class)
-                    .addAsResource("keycloak.conf", "META-INF/keycloak.conf"));
+    @InjectMock
+    DataSourceHealthCheck dataSourceHealthCheck;
 
     @Test
     public void testReadinessDown() {
-        agroalDataSource.close();
+        Mockito.when(dataSourceHealthCheck.call()).thenReturn(HealthCheckResponse.down("down"));
 
         RestAssured.port = 9001;
         given()
                 .when().get("/health/ready")
                 .then()
                 .statusCode(503)
-                .body(Matchers.containsString("DOWN"));
+                .body(Matchers.allOf(Matchers.containsString("DOWN"), Matchers.containsString(KeycloakReadyHealthCheck.FAILING_SINCE)));
+
+        Mockito.when(dataSourceHealthCheck.call()).thenReturn(HealthCheckResponse.up("up"));
+        given()
+                .when().get("/health/ready")
+                .then()
+                .statusCode(200)
+                .body(Matchers.not(Matchers.containsString(KeycloakReadyHealthCheck.FAILING_SINCE)));
+    }
+
+    @Test
+    public void testReadinessTimeout() throws InterruptedException, ExecutionException {
+        Semaphore wait = new Semaphore(0);
+        Semaphore answering = new Semaphore(0);
+        Mockito.when(dataSourceHealthCheck.call()).thenAnswer(invocation -> {
+            answering.release();
+            wait.acquire();
+            return HealthCheckResponse.up("up");
+        }).thenReturn(HealthCheckResponse.up("up"));
+
+        RestAssured.port = 9001;
+        ExecutorService exec = Executors.newSingleThreadExecutor();
+        try {
+            var hung = exec.submit(() -> given()
+                    .when().get("/health/ready")
+                    .then()
+                    .statusCode(200)
+                    .body(Matchers.not(Matchers.containsString(KeycloakReadyHealthCheck.FAILING_SINCE))));
+            
+            answering.acquire();
+            
+            // should be able to complete a second request with the first one held
+            given()
+                .when().get("/health/ready")
+                .then()
+                .statusCode(200)
+                .body(Matchers.not(Matchers.containsString(KeycloakReadyHealthCheck.FAILING_SINCE)));
+            
+            wait.release();
+            
+            hung.get();
+        } finally {
+            wait.release();
+            exec.shutdownNow();
+        }
     }
 }

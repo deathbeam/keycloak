@@ -28,7 +28,7 @@
 
     <artifactId>keycloak-server-spi</artifactId>
     <name>Keycloak Server SPI</name>
-    <description/>
+    <description>Keycloak Server SPI</description>
 
     <dependencies>
         <dependency>
@@ -61,6 +61,12 @@
             <groupId>org.infinispan.protostream</groupId>
             <artifactId>protostream</artifactId>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.checkerframework</groupId>
+            <artifactId>checker-qual</artifactId>
+            <version>${checkerframework.version}</version>
+            <optional>true</optional>
         </dependency>
         <dependency>
             <groupId>junit</groupId>

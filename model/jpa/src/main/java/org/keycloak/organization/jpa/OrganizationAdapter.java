@@ -17,50 +17,48 @@
 
 package org.keycloak.organization.jpa;
 
-import static java.util.Optional.ofNullable;
-
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Map;
 import java.util.List;
-import java.util.Set;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import jakarta.persistence.EntityManager;
+
+import org.keycloak.connections.jpa.JpaConnectionProvider;
 import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderModel;
+import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelValidationException;
 import org.keycloak.models.OrganizationDomainModel;
 import org.keycloak.models.OrganizationModel;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.jpa.JpaModel;
+import org.keycloak.models.jpa.entities.IdentityProviderEntity;
 import org.keycloak.models.jpa.entities.OrganizationDomainEntity;
 import org.keycloak.models.jpa.entities.OrganizationEntity;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.organization.OrganizationProvider;
-import org.keycloak.utils.EmailValidationUtil;
+import org.keycloak.organization.utils.Organizations;
 import org.keycloak.utils.StringUtil;
+
+import static java.util.Optional.ofNullable;
 
 public final class OrganizationAdapter implements OrganizationModel, JpaModel<OrganizationEntity> {
 
+    private final KeycloakSession session;
     private final RealmModel realm;
     private final OrganizationEntity entity;
     private final OrganizationProvider provider;
     private GroupModel group;
     private Map<String, List<String>> attributes;
 
-    public OrganizationAdapter(RealmModel realm, OrganizationProvider provider) {
-        entity = new OrganizationEntity();
-        entity.setId(KeycloakModelUtils.generateId());
-        entity.setRealmId(realm.getId());
-        this.realm = realm;
-        this.provider = provider;
-    }
-
-    public OrganizationAdapter(RealmModel realm, OrganizationEntity entity, OrganizationProvider provider) {
+    public OrganizationAdapter(KeycloakSession session, RealmModel realm, OrganizationEntity entity, OrganizationProvider provider) {
+        this.session = session;
         this.realm = realm;
         this.entity = entity;
         this.provider = provider;
@@ -133,14 +131,40 @@ public final class OrganizationAdapter implements OrganizationModel, JpaModel<Or
     }
 
     @Override
+    public String getRedirectUrl() {
+        return entity.getRedirectUrl();
+    }
+
+    @Override
+    public void setRedirectUrl(String redirectUrl) {
+        entity.setRedirectUrl(redirectUrl);
+    }
+
+    @Override
     public void setAttributes(Map<String, List<String>> attributes) {
         if (attributes == null) {
             return;
         }
-        Set<String> attrsToRemove = getAttributes().keySet();
-        attrsToRemove.removeAll(attributes.keySet());
-        attrsToRemove.forEach(group::removeAttribute);
-        attributes.forEach(group::setAttribute);
+
+        // add organization to the session as the following code updates the underlying group
+        OrganizationModel current = session.getContext().getOrganization();
+        if (current == null) {
+            session.getContext().setOrganization(this);
+        }
+
+        try {
+            // getAttributes() can expose the group's shared cached attribute map; work off a
+            // copy so we don't structurally modify its live keySet while concurrent requests
+            // read it, which throws ConcurrentModificationException.
+            Set<String> attrsToRemove = new HashSet<>(getAttributes().keySet());
+            attrsToRemove.removeAll(attributes.keySet());
+            attrsToRemove.forEach(group::removeAttribute);
+            attributes.forEach(group::setAttribute);
+        } finally {
+            if (current == null) {
+                session.getContext().setOrganization(null);
+            }
+        }
     }
 
     @Override
@@ -158,39 +182,48 @@ public final class OrganizationAdapter implements OrganizationModel, JpaModel<Or
 
     @Override
     public void setDomains(Set<OrganizationDomainModel> domains) {
-        if (domains == null || domains.isEmpty()) {
-            throw new ModelValidationException("You must provide at least one domain");
+        if (domains == null) {
+            return;
         }
+
+        jakarta.persistence.EntityManager em = session.getProvider(JpaConnectionProvider.class).getEntityManager();
 
         Map<String, OrganizationDomainModel> modelMap = domains.stream()
                 .map(this::validateDomain)
                 .collect(Collectors.toMap(OrganizationDomainModel::getName, Function.identity()));
 
         for (OrganizationDomainEntity domainEntity : new HashSet<>(this.entity.getDomains())) {
-            // update the existing domain (for now, only the verified flag can be changed).
-            if (modelMap.containsKey(domainEntity.getName())) {
-                domainEntity.setVerified(modelMap.get(domainEntity.getName()).isVerified());
-                modelMap.remove(domainEntity.getName());
-            } else {
-                // remove domain that is not found in the new set.
+            if (!modelMap.containsKey(domainEntity.getName())) {
                 this.entity.removeDomain(domainEntity);
-                // check if any idp is assigned to the removed domain, and unset the domain if that's the case.
-                getIdentityProviders()
-                        .filter(idp -> Objects.equals(domainEntity.getName(), idp.getConfig().get(ORGANIZATION_DOMAIN_ATTRIBUTE)))
-                        .forEach(idp -> {
-                            idp.getConfig().remove(ORGANIZATION_DOMAIN_ATTRIBUTE);
-                            realm.updateIdentityProvider(idp);
-                        });
+                domainEntity.setIdentityProvider(null);
+                em.remove(domainEntity);
+            } else {
+                OrganizationDomainModel updated = modelMap.remove(domainEntity.getName());
+                domainEntity.setVerified(updated.isVerified());
+                domainEntity.setIdentityProvider(resolveIdentityProvider(em, updated.getIdentityProviderAlias()));
+                domainEntity.setAutoRedirect(updated.isAutoRedirect());
             }
         }
 
-        // create the remaining domains.
+        // claim-or-create: for new domains in the set
         for (OrganizationDomainModel model : modelMap.values()) {
-            OrganizationDomainEntity domainEntity = new OrganizationDomainEntity();
-            domainEntity.setId(KeycloakModelUtils.generateId());
-            domainEntity.setName(model.getName());
-            domainEntity.setVerified(model.isVerified());
-            domainEntity.setOrganization(this.entity);
+            OrganizationDomainEntity domainEntity;
+            try {
+                domainEntity = em.createNamedQuery("getDomainByRealmAndName", OrganizationDomainEntity.class)
+                        .setParameter("realmId", realm.getId())
+                        .setParameter("name", model.getName())
+                        .getSingleResult();
+                // domain already exists — just claim it, do not overwrite global properties
+            } catch (jakarta.persistence.NoResultException e) {
+                // domain doesn't exist — create it with provided properties
+                domainEntity = new OrganizationDomainEntity();
+                domainEntity.setId(KeycloakModelUtils.generateId());
+                domainEntity.setName(model.getName());
+                domainEntity.setVerified(model.isVerified());
+                domainEntity.setRealmId(realm.getId());
+                domainEntity.setIdentityProvider(resolveIdentityProvider(em, model.getIdentityProviderAlias()));
+                domainEntity.setAutoRedirect(model.isAutoRedirect());
+            }
             this.entity.addDomain(domainEntity);
         }
     }
@@ -203,6 +236,11 @@ public final class OrganizationAdapter implements OrganizationModel, JpaModel<Or
     @Override
     public boolean isManaged(UserModel user) {
         return provider.isManagedMember(this, user);
+    }
+
+    @Override
+    public boolean isMember(UserModel user) {
+        return provider.isMember(this, user);
     }
 
     @Override
@@ -241,7 +279,9 @@ public final class OrganizationAdapter implements OrganizationModel, JpaModel<Or
     }
 
     private OrganizationDomainModel toModel(OrganizationDomainEntity entity) {
-        return new OrganizationDomainModel(entity.getName(), entity.isVerified());
+        IdentityProviderEntity idp = entity.getIdentityProvider();
+        String alias = idp != null ? idp.getAlias() : null;
+        return new OrganizationDomainModel(entity.getName(), entity.isVerified(), alias, entity.isAutoRedirect());
     }
 
     /**
@@ -254,15 +294,38 @@ public final class OrganizationAdapter implements OrganizationModel, JpaModel<Or
     private OrganizationDomainModel validateDomain(OrganizationDomainModel domainModel) {
         String domainName = domainModel.getName();
 
-        // we rely on the same validation util used by the EmailValidator to ensure the domain part is consistently validated.
-        if (StringUtil.isBlank(domainName) || !EmailValidationUtil.isValidEmail("nouser@" + domainName)) {
-            throw new ModelValidationException("The specified domain is invalid: " + domainName);
+        if (StringUtil.isBlank(domainName)) {
+            throw new ModelValidationException("Domain name cannot be empty");
         }
+
+        Organizations.validateDomain(domainName);
+
+        // Check for conflicts with other organizations
         OrganizationModel orgModel = provider.getByDomainName(domainName);
-        if (orgModel != null && !Objects.equals(getId(), orgModel.getId())) {
-            throw new ModelValidationException("Domain " + domainName + " is already linked to another organization in realm " + realm.getName());
+
+        if (orgModel != null && !Objects.equals(getId(), orgModel.getId())
+                && orgModel.getDomains().anyMatch(d -> d.getName().equalsIgnoreCase(domainName))) {
+            throw new ModelValidationException("Domain " + domainName + " is already linked to organization " + orgModel.getName() + " in realm " + realm.getName());
         }
+
         return domainModel;
+    }
+
+    private IdentityProviderEntity resolveIdentityProvider(EntityManager em, String alias) {
+        if (alias == null) {
+            return null;
+        }
+        IdentityProviderModel idpModel = session.identityProviders().getByAlias(alias);
+        if (idpModel == null) {
+            throw new ModelValidationException("Identity provider with alias '" + alias + "' does not exist in realm " + realm.getName());
+        }
+        String internalId = idpModel.getInternalId();
+        boolean linked = entity.getIdentityProviderLinks().stream()
+                .anyMatch(link -> internalId.equals(link.getIdentityProviderId()));
+        if (!linked) {
+            throw new ModelValidationException("Identity provider '" + alias + "' is not associated with organization " + getName());
+        }
+        return em.getReference(IdentityProviderEntity.class, internalId);
     }
 
     private GroupModel getGroup() {

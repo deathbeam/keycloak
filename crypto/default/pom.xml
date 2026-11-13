@@ -28,12 +28,7 @@
 
     <artifactId>keycloak-crypto-default</artifactId>
     <name>Keycloak Crypto Default</name>
-    <description/>
-
-    <properties>
-        <!-- We still need to support EAP 8, set the Java version to 11. -->
-        <maven.compiler.release>11</maven.compiler.release>
-    </properties>
+    <description>Keycloak Crypto Default</description>
 
     <dependencies>
         <dependency>

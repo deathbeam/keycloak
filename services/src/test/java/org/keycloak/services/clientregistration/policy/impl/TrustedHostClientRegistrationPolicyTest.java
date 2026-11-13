@@ -16,11 +16,6 @@
  */
 package org.keycloak.services.clientregistration.policy.impl;
 
-import java.net.InetAddress;
-import java.net.UnknownHostException;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
 import org.keycloak.common.Profile;
 import org.keycloak.common.crypto.CryptoIntegration;
 import org.keycloak.common.crypto.CryptoProvider;
@@ -29,6 +24,13 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.services.clientregistration.policy.ClientRegistrationPolicyException;
 import org.keycloak.services.resteasy.ResteasyKeycloakSession;
 import org.keycloak.services.resteasy.ResteasyKeycloakSessionFactory;
+
+import org.junit.Assert;
+import org.junit.BeforeClass;
+import org.junit.Test;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  *
@@ -53,8 +55,8 @@ public class TrustedHostClientRegistrationPolicyTest {
         ComponentModel model = createComponentModel("localhost");
         TrustedHostClientRegistrationPolicy policy = (TrustedHostClientRegistrationPolicy) factory.create(session, model);
 
-        policy.verifyHost("127.0.0.1");
-        Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.verifyHost("10.0.0.1"));
+        assertTrue(policy.verifyHost("127.0.0.1"));
+        assertFalse(policy.verifyHost("10.0.0.1"));
         policy.checkURLTrusted("https://localhost", policy.getTrustedHosts(), policy.getTrustedDomains());
         Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.checkURLTrusted("https://otherhost",
                 policy.getTrustedHosts(), policy.getTrustedDomains()));
@@ -66,8 +68,8 @@ public class TrustedHostClientRegistrationPolicyTest {
         ComponentModel model = createComponentModel("*.localhost");
         TrustedHostClientRegistrationPolicy policy = (TrustedHostClientRegistrationPolicy) factory.create(session, model);
 
-        policy.verifyHost("127.0.0.1");
-        Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.verifyHost("10.0.0.1"));
+        assertTrue(policy.verifyHost("127.0.0.1"));
+        assertFalse(policy.verifyHost("10.0.0.1"));
         policy.checkURLTrusted("https://localhost", policy.getTrustedHosts(), policy.getTrustedDomains());
         policy.checkURLTrusted("https://other.localhost", policy.getTrustedHosts(), policy.getTrustedDomains());
         Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.checkURLTrusted("https://otherlocalhost",
@@ -80,8 +82,8 @@ public class TrustedHostClientRegistrationPolicyTest {
         ComponentModel model = createComponentModel("127.0.0.1");
         TrustedHostClientRegistrationPolicy policy = (TrustedHostClientRegistrationPolicy) factory.create(session, model);
 
-        policy.verifyHost("127.0.0.1");
-        Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.verifyHost("10.0.0.1"));
+        assertTrue(policy.verifyHost("127.0.0.1"));
+        assertFalse(policy.verifyHost("10.0.0.1"));
         policy.checkURLTrusted("https://127.0.0.1", policy.getTrustedHosts(), policy.getTrustedDomains());
         Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.checkURLTrusted("https://localhost",
                 policy.getTrustedHosts(), policy.getTrustedDomains()));
@@ -102,17 +104,35 @@ public class TrustedHostClientRegistrationPolicyTest {
     }
 
     @Test
-    public void testGithubDomain() throws UnknownHostException {
+    public void testLocalhostDomainFallback() {
         TrustedHostClientRegistrationPolicyFactory factory = new TrustedHostClientRegistrationPolicyFactory();
-        ComponentModel model = createComponentModel("*.github.com");
+        ComponentModel model = createComponentModel("*.localhost");
         TrustedHostClientRegistrationPolicy policy = (TrustedHostClientRegistrationPolicy) factory.create(session, model);
 
-        policy.verifyHost(InetAddress.getByName("www.github.com").getHostAddress());
-        policy.verifyHost(InetAddress.getByName("github.com").getHostAddress());
-        policy.checkURLTrusted("https://www.github.com", policy.getTrustedHosts(), policy.getTrustedDomains());
-        policy.checkURLTrusted("https://github.com", policy.getTrustedHosts(), policy.getTrustedDomains());
-        Assert.assertThrows(ClientRegistrationPolicyException.class, () -> policy.checkURLTrusted("https://othergithub.com",
-                policy.getTrustedHosts(), policy.getTrustedDomains()));
+        // Simulate a hostname that would fail DNS resolution on some platforms
+        // but matches the trusted domain fallback logic
+        assertTrue(policy.verifyHost("other.localhost"));
+        assertTrue(policy.verifyHost("localhost"));
+        assertFalse(policy.verifyHost("otherlocalhost"));
+    }
+
+    @Test
+    public void testReadingTrustedHostsDoesNotMutateConfig() {
+        // Issue #50286: reading the policy config must not mutate the shared cached
+        // ComponentModel (getList would insert the absent trusted-hosts key).
+        TrustedHostClientRegistrationPolicyFactory factory = new TrustedHostClientRegistrationPolicyFactory();
+        ComponentModel model = new ComponentModel();
+        model.put(TrustedHostClientRegistrationPolicyFactory.HOST_SENDING_REGISTRATION_REQUEST_MUST_MATCH, "true");
+        model.put(TrustedHostClientRegistrationPolicyFactory.CLIENT_URIS_MUST_MATCH, "true");
+        TrustedHostClientRegistrationPolicy policy = (TrustedHostClientRegistrationPolicy) factory.create(session, model);
+
+        assertFalse(model.getConfig().containsKey(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS));
+        policy.getTrustedHosts();
+        policy.getTrustedDomains();
+        assertFalse("reading trusted hosts must not mutate the shared component config",
+                model.getConfig().containsKey(TrustedHostClientRegistrationPolicyFactory.TRUSTED_HOSTS));
+        assertTrue("trusted hosts and domains must be empty when none are configured",
+                policy.getTrustedHosts().isEmpty() && policy.getTrustedDomains().isEmpty());
     }
 
     private ComponentModel createComponentModel(String... hosts) {

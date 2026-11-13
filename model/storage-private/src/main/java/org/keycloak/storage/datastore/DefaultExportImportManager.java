@@ -17,20 +17,41 @@
 
 package org.keycloak.storage.datastore;
 
-import org.jboss.logging.Logger;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+import jakarta.ws.rs.core.MediaType;
+
 import org.keycloak.common.Profile;
 import org.keycloak.common.Profile.Feature;
 import org.keycloak.common.enums.SslRequired;
 import org.keycloak.common.util.MultivaluedHashMap;
 import org.keycloak.component.ComponentModel;
+import org.keycloak.connections.jpa.support.EntityManagers;
 import org.keycloak.deployment.DeployedConfigurationsManager;
 import org.keycloak.exportimport.ExportAdapter;
 import org.keycloak.exportimport.ExportOptions;
 import org.keycloak.exportimport.util.ExportUtils;
 import org.keycloak.keys.KeyProvider;
 import org.keycloak.migration.MigrationProvider;
+import org.keycloak.migration.ModelVersion;
 import org.keycloak.migration.migrators.MigrateTo8_0_0;
 import org.keycloak.migration.migrators.MigrationUtils;
+import org.keycloak.migration.migrators.OidcIssuerMigration;
 import org.keycloak.models.AuthenticationExecutionModel;
 import org.keycloak.models.AuthenticationFlowModel;
 import org.keycloak.models.AuthenticatorConfigModel;
@@ -46,9 +67,9 @@ import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.LDAPConstants;
 import org.keycloak.models.ModelException;
+import org.keycloak.models.ModelValidationException;
 import org.keycloak.models.OAuth2DeviceConfig;
 import org.keycloak.models.OTPPolicy;
-import org.keycloak.models.OrganizationDomainModel;
 import org.keycloak.models.OrganizationModel;
 import org.keycloak.models.ParConfig;
 import org.keycloak.models.PasswordPolicy;
@@ -59,15 +80,21 @@ import org.keycloak.models.ScopeContainerModel;
 import org.keycloak.models.UserConsentModel;
 import org.keycloak.models.UserModel;
 import org.keycloak.models.WebAuthnPolicy;
+import org.keycloak.models.WebAuthnPolicyPasswordlessDefaults;
+import org.keycloak.models.WebAuthnPolicyTwoFactorDefaults;
 import org.keycloak.models.utils.ComponentUtil;
 import org.keycloak.models.utils.DefaultAuthenticationFlows;
 import org.keycloak.models.utils.DefaultKeyProviders;
 import org.keycloak.models.utils.DefaultRequiredActions;
 import org.keycloak.models.utils.KeycloakModelUtils;
-import org.keycloak.models.utils.ModelToRepresentation;
+import org.keycloak.models.utils.ProtocolMapperValidationUtil;
 import org.keycloak.models.utils.RepresentationToModel;
 import org.keycloak.organization.OrganizationProvider;
+import org.keycloak.organization.validation.OrganizationsValidation;
 import org.keycloak.partialimport.PartialImportResults;
+import org.keycloak.protocol.LoginProtocol;
+import org.keycloak.protocol.LoginProtocolFactory;
+import org.keycloak.protocol.ProtocolMapperConfigException;
 import org.keycloak.protocol.oidc.OIDCConfigAttributes;
 import org.keycloak.representations.idm.ApplicationRepresentation;
 import org.keycloak.representations.idm.AuthenticationExecutionExportRepresentation;
@@ -84,8 +111,10 @@ import org.keycloak.representations.idm.FederatedIdentityRepresentation;
 import org.keycloak.representations.idm.GroupRepresentation;
 import org.keycloak.representations.idm.IdentityProviderMapperRepresentation;
 import org.keycloak.representations.idm.IdentityProviderRepresentation;
+import org.keycloak.representations.idm.MemberRepresentation;
+import org.keycloak.representations.idm.MembershipType;
 import org.keycloak.representations.idm.OAuthClientRepresentation;
-import org.keycloak.representations.idm.OrganizationDomainRepresentation;
+import org.keycloak.representations.idm.OrganizationIdentityProviderLinkRepresentation;
 import org.keycloak.representations.idm.OrganizationRepresentation;
 import org.keycloak.representations.idm.PartialImportRepresentation;
 import org.keycloak.representations.idm.ProtocolMapperRepresentation;
@@ -106,31 +135,28 @@ import org.keycloak.storage.UserStorageProvider;
 import org.keycloak.storage.UserStorageProviderModel;
 import org.keycloak.storage.UserStorageUtil;
 import org.keycloak.storage.federated.UserFederatedStorageProvider;
+import org.keycloak.util.Booleans;
 import org.keycloak.util.JsonSerialization;
 import org.keycloak.utils.StringUtil;
 import org.keycloak.validation.ValidationUtil;
 
-import jakarta.ws.rs.core.MediaType;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedList;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import org.jboss.logging.Logger;
 
+import static org.keycloak.models.Constants.DEFAULT_ACCESS_CODE_LIFESPAN;
+import static org.keycloak.models.Constants.DEFAULT_ACCESS_CODE_LIFESPAN_LOGIN;
+import static org.keycloak.models.Constants.DEFAULT_ACCESS_CODE_LIFESPAN_USER_ACTION;
+import static org.keycloak.models.Constants.DEFAULT_ACCESS_TOKEN_LIFESPAN;
+import static org.keycloak.models.Constants.DEFAULT_ACTION_TOKEN_GENERATED_BY_ADMIN_LIFESPAN;
+import static org.keycloak.models.Constants.DEFAULT_SESSION_IDLE_TIMEOUT;
+import static org.keycloak.models.Constants.DEFAULT_SESSION_MAX_LIFESPAN;
 import static org.keycloak.models.utils.DefaultRequiredActions.getDefaultRequiredActionCaseInsensitively;
+import static org.keycloak.models.utils.ModelToRepresentation.stripRealmAttributesIncludedAsFields;
 import static org.keycloak.models.utils.RepresentationToModel.createCredentials;
 import static org.keycloak.models.utils.RepresentationToModel.createFederatedIdentities;
 import static org.keycloak.models.utils.RepresentationToModel.createGroups;
+import static org.keycloak.models.utils.RepresentationToModel.createIssuedVerifiableCredentials;
 import static org.keycloak.models.utils.RepresentationToModel.createRoleMappings;
+import static org.keycloak.models.utils.RepresentationToModel.createVerifiableCredentials;
 import static org.keycloak.models.utils.RepresentationToModel.importGroup;
 import static org.keycloak.models.utils.RepresentationToModel.importRoles;
 import static org.keycloak.models.utils.StripSecretsUtils.stripSecrets;
@@ -143,6 +169,21 @@ import static org.keycloak.models.utils.StripSecretsUtils.stripSecrets;
 public class DefaultExportImportManager implements ExportImportManager {
     private final KeycloakSession session;
     private static final Logger logger = Logger.getLogger(DefaultExportImportManager.class);
+
+    public static class Batcher implements Consumer<KeycloakSession> {
+        private int count;
+
+        @Override
+        public void accept(KeycloakSession session) {
+            // TODO: determine what a good number is here
+            // There actually doesn't seem to be much difference with setting this
+            // higher - the important part is to clear the contexts - which could be even more optimal
+            // as detaching just users and their children
+            if (++count % 64 == 0) {
+                EntityManagers.flush(session, true);
+            }
+        };
+    }
 
     public DefaultExportImportManager(KeycloakSession session) {
         this.session = session;
@@ -172,8 +213,14 @@ public class DefaultExportImportManager implements ExportImportManager {
     }
 
     @Override
-    public void importRealm(RealmRepresentation rep, RealmModel newRealm, boolean skipUserDependent) {
+    public void importRealm(RealmRepresentation rep, RealmModel newRealm, Runnable userImport) {
+        ModelVersion version = DefaultMigrationManager.getModelVersionFromRep(rep);
+
         convertDeprecatedSocialProviders(rep);
+        // Migrate before identity provider configurations are validated during import.
+        if (version == null || version.lessThan(OidcIssuerMigration.VERSION)) {
+            OidcIssuerMigration.migrateImport(session, rep);
+        }
         convertDeprecatedApplications(session, rep);
         convertDeprecatedClientTemplates(rep);
 
@@ -184,15 +231,15 @@ public class DefaultExportImportManager implements ExportImportManager {
         if (rep.isUserManagedAccessAllowed() != null) newRealm.setUserManagedAccessAllowed(rep.isUserManagedAccessAllowed());
         if (rep.isBruteForceProtected() != null) newRealm.setBruteForceProtected(rep.isBruteForceProtected());
         if (rep.isPermanentLockout() != null) newRealm.setPermanentLockout(rep.isPermanentLockout());
-        if (rep.getMaxTemporaryLockouts() != null) newRealm.setMaxTemporaryLockouts(rep.getMaxTemporaryLockouts());
-        if (rep.getMaxFailureWaitSeconds() != null) newRealm.setMaxFailureWaitSeconds(rep.getMaxFailureWaitSeconds());
-        if (rep.getMinimumQuickLoginWaitSeconds() != null)
-            newRealm.setMinimumQuickLoginWaitSeconds(rep.getMinimumQuickLoginWaitSeconds());
-        if (rep.getWaitIncrementSeconds() != null) newRealm.setWaitIncrementSeconds(rep.getWaitIncrementSeconds());
-        if (rep.getQuickLoginCheckMilliSeconds() != null)
-            newRealm.setQuickLoginCheckMilliSeconds(rep.getQuickLoginCheckMilliSeconds());
-        if (rep.getMaxDeltaTimeSeconds() != null) newRealm.setMaxDeltaTimeSeconds(rep.getMaxDeltaTimeSeconds());
-        if (rep.getFailureFactor() != null) newRealm.setFailureFactor(rep.getFailureFactor());
+        if (rep.getMaxTemporaryLockouts() != null) newRealm.setMaxTemporaryLockouts(checkNonNegativeNumber(rep.getMaxTemporaryLockouts(),"Maximum temporary lockouts"));
+        if (rep.getBruteForceStrategy() != null) newRealm.setBruteForceStrategy(rep.getBruteForceStrategy());
+        if (rep.getMaxFailureWaitSeconds() != null) newRealm.setMaxFailureWaitSeconds(checkNonNegativeNumber(rep.getMaxFailureWaitSeconds(),"Maximum failure wait seconds"));
+        if (rep.getMinimumQuickLoginWaitSeconds() != null) newRealm.setMinimumQuickLoginWaitSeconds(checkNonNegativeNumber(rep.getMinimumQuickLoginWaitSeconds(),"Minimum quick login wait seconds"));
+        if (rep.getWaitIncrementSeconds() != null) newRealm.setWaitIncrementSeconds(checkNonNegativeNumber(rep.getWaitIncrementSeconds(),"Wait increment seconds"));
+        if (rep.getQuickLoginCheckMilliSeconds() != null) newRealm.setQuickLoginCheckMilliSeconds(checkNonNegativeNumber(rep.getQuickLoginCheckMilliSeconds().intValue(), "Quick login check milliseconds"));
+        if (rep.getMaxDeltaTimeSeconds() != null) newRealm.setMaxDeltaTimeSeconds(checkNonNegativeNumber(rep.getMaxDeltaTimeSeconds(),"Maximum delta time seconds"));
+        if (rep.getFailureFactor() != null) newRealm.setFailureFactor(checkNonNegativeNumber(rep.getFailureFactor(),"Failure factor"));
+        if (rep.getMaxSecondaryAuthFailures() != null) newRealm.setMaxSecondaryAuthFailures(checkNonNegativeNumber(rep.getMaxSecondaryAuthFailures(),"Maximum secondary authentication failures"));
         if (rep.isEventsEnabled() != null) newRealm.setEventsEnabled(rep.isEventsEnabled());
         if (rep.getEnabledEventTypes() != null)
             newRealm.setEnabledEventTypes(new HashSet<>(rep.getEnabledEventTypes()));
@@ -214,7 +261,7 @@ public class DefaultExportImportManager implements ExportImportManager {
         else newRealm.setRefreshTokenMaxReuse(0);
 
         if (rep.getAccessTokenLifespan() != null) newRealm.setAccessTokenLifespan(rep.getAccessTokenLifespan());
-        else newRealm.setAccessTokenLifespan(300);
+        else newRealm.setAccessTokenLifespan(DEFAULT_ACCESS_TOKEN_LIFESPAN);
 
         if (rep.getAccessTokenLifespanForImplicitFlow() != null)
             newRealm.setAccessTokenLifespanForImplicitFlow(rep.getAccessTokenLifespanForImplicitFlow());
@@ -222,9 +269,9 @@ public class DefaultExportImportManager implements ExportImportManager {
             newRealm.setAccessTokenLifespanForImplicitFlow(Constants.DEFAULT_ACCESS_TOKEN_LIFESPAN_FOR_IMPLICIT_FLOW_TIMEOUT);
 
         if (rep.getSsoSessionIdleTimeout() != null) newRealm.setSsoSessionIdleTimeout(rep.getSsoSessionIdleTimeout());
-        else newRealm.setSsoSessionIdleTimeout(1800);
+        else newRealm.setSsoSessionIdleTimeout(DEFAULT_SESSION_IDLE_TIMEOUT);
         if (rep.getSsoSessionMaxLifespan() != null) newRealm.setSsoSessionMaxLifespan(rep.getSsoSessionMaxLifespan());
-        else newRealm.setSsoSessionMaxLifespan(36000);
+        else newRealm.setSsoSessionMaxLifespan(DEFAULT_SESSION_MAX_LIFESPAN);
         if (rep.getSsoSessionMaxLifespanRememberMe() != null) newRealm.setSsoSessionMaxLifespanRememberMe(rep.getSsoSessionMaxLifespanRememberMe());
         if (rep.getSsoSessionIdleTimeoutRememberMe() != null) newRealm.setSsoSessionIdleTimeoutRememberMe(rep.getSsoSessionIdleTimeoutRememberMe());
         if (rep.getOfflineSessionIdleTimeout() != null)
@@ -250,19 +297,19 @@ public class DefaultExportImportManager implements ExportImportManager {
             newRealm.setClientOfflineSessionMaxLifespan(rep.getClientOfflineSessionMaxLifespan());
 
         if (rep.getAccessCodeLifespan() != null) newRealm.setAccessCodeLifespan(rep.getAccessCodeLifespan());
-        else newRealm.setAccessCodeLifespan(60);
+        else newRealm.setAccessCodeLifespan(DEFAULT_ACCESS_CODE_LIFESPAN);
 
         if (rep.getAccessCodeLifespanUserAction() != null)
             newRealm.setAccessCodeLifespanUserAction(rep.getAccessCodeLifespanUserAction());
-        else newRealm.setAccessCodeLifespanUserAction(300);
+        else newRealm.setAccessCodeLifespanUserAction(DEFAULT_ACCESS_CODE_LIFESPAN_USER_ACTION);
 
         if (rep.getAccessCodeLifespanLogin() != null)
             newRealm.setAccessCodeLifespanLogin(rep.getAccessCodeLifespanLogin());
-        else newRealm.setAccessCodeLifespanLogin(1800);
+        else newRealm.setAccessCodeLifespanLogin(DEFAULT_ACCESS_CODE_LIFESPAN_LOGIN);
 
         if (rep.getActionTokenGeneratedByAdminLifespan() != null)
             newRealm.setActionTokenGeneratedByAdminLifespan(rep.getActionTokenGeneratedByAdminLifespan());
-        else newRealm.setActionTokenGeneratedByAdminLifespan(12 * 60 * 60);
+        else newRealm.setActionTokenGeneratedByAdminLifespan(DEFAULT_ACTION_TOKEN_GENERATED_BY_ADMIN_LIFESPAN);
 
         if (rep.getActionTokenGeneratedByUserLifespan() != null)
             newRealm.setActionTokenGeneratedByUserLifespan(rep.getActionTokenGeneratedByUserLifespan());
@@ -286,6 +333,8 @@ public class DefaultExportImportManager implements ExportImportManager {
         if (rep.isResetPasswordAllowed() != null) newRealm.setResetPasswordAllowed(rep.isResetPasswordAllowed());
         if (rep.isEditUsernameAllowed() != null) newRealm.setEditUsernameAllowed(rep.isEditUsernameAllowed());
         if (rep.isOrganizationsEnabled() != null) newRealm.setOrganizationsEnabled(rep.isOrganizationsEnabled());
+        if (rep.isScimApiEnabled() != null) newRealm.setScimApiEnabled(rep.isScimApiEnabled());
+        if (rep.isAdminPermissionsEnabled() != null) newRealm.setAdminPermissionsEnabled(rep.isAdminPermissionsEnabled());
         if (rep.getLoginTheme() != null) newRealm.setLoginTheme(rep.getLoginTheme());
         if (rep.getAccountTheme() != null) newRealm.setAccountTheme(rep.getAccountTheme());
         if (rep.getAdminTheme() != null) newRealm.setAdminTheme(rep.getAdminTheme());
@@ -336,7 +385,11 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
 
         importIdentityProviders(rep, newRealm, session);
-        importIdentityProviderMappers(rep, newRealm);
+        importIdentityProviderMappers(rep, session);
+
+        if (rep.isVerifiableCredentialsEnabled() != null) {
+            newRealm.setVerifiableCredentialsEnabled(rep.isVerifiableCredentialsEnabled());
+        }
 
         Map<String, ClientScopeModel> clientScopes = new HashMap<>();
         if (rep.getClientScopes() != null) {
@@ -363,9 +416,17 @@ public class DefaultExportImportManager implements ExportImportManager {
             }
         }
 
+        // import attributes
+
+        if (rep.getAttributes() != null) {
+            for (Map.Entry<String, String> attr : rep.getAttributes().entrySet()) {
+                newRealm.setAttribute(attr.getKey(), attr.getValue());
+            }
+        }
+
         Map<String, ClientModel> createdClients = new HashMap<>();
         if (rep.getClients() != null) {
-            createdClients = createClients(session, rep, newRealm, mappedFlows);
+            createdClients = createClients(session, version, rep, newRealm, mappedFlows);
         }
 
         importRoles(rep.getRoles(), newRealm);
@@ -411,6 +472,13 @@ public class DefaultExportImportManager implements ExportImportManager {
             newRealm.setBrowserSecurityHeaders(BrowserSecurityHeaders.realmDefaultHeaders);
         }
 
+        if (rep.getGroups() != null) {
+            importGroups(newRealm, rep);
+            if (rep.getDefaultGroups() != null) {
+                KeycloakModelUtils.setDefaultGroups(session, newRealm, rep.getDefaultGroups().stream());
+            }
+        }
+
         if (rep.getComponents() != null) {
             MultivaluedHashMap<String, ComponentExportRepresentation> components = rep.getComponents();
             String parentId = newRealm.getId();
@@ -419,29 +487,48 @@ public class DefaultExportImportManager implements ExportImportManager {
 
         importUserFederationProvidersAndMappers(session, rep, newRealm);
 
-        if (rep.getGroups() != null) {
-            importGroups(newRealm, rep);
-            if (rep.getDefaultGroups() != null) {
-                KeycloakModelUtils.setDefaultGroups(session, newRealm, rep.getDefaultGroups().stream());
+        // Mapper validation may resolve other clients or realm components. Validate only after those
+        // dependencies exist, but before importing users, which can commit batches independently.
+        for (ClientModel client : createdClients.values()) {
+            ValidationUtil.validateClient(session, client, false, r -> {
+                throw new ModelValidationException("Invalid client " + client.getClientId() + ": " + r.getAllErrorsAsString());
+            });
+        }
+        for (ClientScopeModel clientScope : clientScopes.values()) {
+            try {
+                ProtocolMapperValidationUtil.validateProtocolMappers(session, newRealm, clientScope);
+            } catch (ProtocolMapperConfigException ex) {
+                logger.warnf("Invalid protocol mapper configuration in client scope '%s': %s", clientScope.getName(), ex.getMessage());
+                throw new ModelValidationException(ProtocolMapperValidationUtil.INVALID_CONFIG_MESSAGE);
             }
         }
-
 
         // create users and their role mappings and social mappings
 
-        if (rep.getUsers() != null) {
-            for (UserRepresentation userRep : rep.getUsers()) {
-                createUser(newRealm, userRep);
-            }
+        if (Optional.ofNullable(rep.getUsers()).filter(l -> !l.isEmpty()).isPresent() ||
+                Optional.ofNullable(rep.getFederatedUsers()).filter(l -> !l.isEmpty()).isPresent()) {
+            // run in a batch to mimic the behavior of directory based import
+            // this is using nested entity managers to keep the parent context clean
+            EntityManagers.runInBatch(session, () -> {
+                Batcher onUserAdded = new Batcher();
+                if (rep.getUsers() != null) {
+                    for (UserRepresentation userRep : rep.getUsers()) {
+                        createUser(newRealm, userRep);
+                        onUserAdded.accept(session);
+                    }
+                }
+
+                if (rep.getFederatedUsers() != null) {
+                    for (UserRepresentation userRep : rep.getFederatedUsers()) {
+                        importFederatedUser(session, newRealm, userRep);
+                        onUserAdded.accept(session);
+                    }
+                }
+            }, true);
         }
 
-        if (rep.getFederatedUsers() != null) {
-            for (UserRepresentation userRep : rep.getFederatedUsers()) {
-                importFederatedUser(session, newRealm, userRep);
-            }
-        }
-
-        if (!skipUserDependent) {
+        if (userImport != null) {
+            userImport.run();
             importRealmAuthorizationSettings(rep, newRealm, session);
         }
 
@@ -453,14 +540,6 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
         if (rep.getDefaultLocale() != null) {
             newRealm.setDefaultLocale(rep.getDefaultLocale());
-        }
-
-        // import attributes
-
-        if (rep.getAttributes() != null) {
-            for (Map.Entry<String, String> attr : rep.getAttributes().entrySet()) {
-                newRealm.setAttribute(attr.getKey(), attr.getValue());
-            }
         }
 
         if (newRealm.getComponentsStream(newRealm.getId(), KeyProvider.class.getName()).count() == 0) {
@@ -526,27 +605,48 @@ public class DefaultExportImportManager implements ExportImportManager {
         return role;
     }
 
-    private static Map<String, ClientModel> createClients(KeycloakSession session, RealmRepresentation rep, RealmModel realm, Map<String, String> mappedFlows) {
-        Map<String, ClientModel> appMap = new HashMap<String, ClientModel>();
+    private static void addSamlEncryptionAttributes(ClientModel app) {
+        if ("saml".equals(app.getProtocol()) && "true".equals(app.getAttribute("saml.encrypt"))) {
+            app.setAttribute("saml.encryption.algorithm", "http://www.w3.org/2001/04/xmlenc#aes128-cbc");
+            app.setAttribute("saml.encryption.keyAlgorithm", "http://www.w3.org/2001/04/xmlenc#rsa-oaep-mgf1p");
+            app.setAttribute("saml.encryption.digestMethod", "http://www.w3.org/2000/09/xmldsig#sha1");
+        }
+    }
+
+    private static Map<String, ClientModel> createClients(KeycloakSession session, ModelVersion version, RealmRepresentation rep, RealmModel realm, Map<String, String> mappedFlows) {
+        Map<String, ClientModel> appMap = new HashMap<>();
+        final boolean samlEncryptionAttributes = version != null && version.lessThan(new ModelVersion(26, 4, 0));
         for (ClientRepresentation resourceRep : rep.getClients()) {
+            if (Profile.isFeatureEnabled(Feature.ADMIN_FINE_GRAINED_AUTHZ_V2)) {
+                if (realm.getAdminPermissionsClient() != null && realm.getAdminPermissionsClient().getClientId().equals(resourceRep.getClientId())) {
+                    continue; // admin-permission-client is already imported at this point
+                }
+            }
             ClientModel app = RepresentationToModel.createClient(session, realm, resourceRep, mappedFlows);
             String postLogoutRedirectUris = app.getAttribute(OIDCConfigAttributes.POST_LOGOUT_REDIRECT_URIS);
             if (postLogoutRedirectUris == null) {
                 app.setAttribute(OIDCConfigAttributes.POST_LOGOUT_REDIRECT_URIS, "+");
             }
+            if (samlEncryptionAttributes) {
+                addSamlEncryptionAttributes(app);
+            }
             appMap.put(app.getClientId(), app);
-
-            ValidationUtil.validateClient(session, app, false, r -> {
-                throw new RuntimeException("Invalid client " + app.getClientId() + ": " + r.getAllErrorsAsString());
-            });
         }
         return appMap;
     }
 
-    private static Map<String, ClientScopeModel> createClientScopes(KeycloakSession session, List<ClientScopeRepresentation> clientScopes, RealmModel realm) {
+    private static Map<String, ClientScopeModel> createClientScopes(KeycloakSession session,
+                                                                    List<ClientScopeRepresentation> clientScopes,
+                                                                    RealmModel realm) {
         Map<String, ClientScopeModel> appMap = new HashMap<>();
         for (ClientScopeRepresentation resourceRep : clientScopes) {
-            ClientScopeModel app = RepresentationToModel.createClientScope(session, realm, resourceRep);
+            LoginProtocolFactory loginProtocolFactory = (LoginProtocolFactory) session.getKeycloakSessionFactory()
+                    .getProviderFactory(LoginProtocol.class, resourceRep.getProtocol());
+            if (loginProtocolFactory != null) {
+                loginProtocolFactory.validateClientScope(session, resourceRep);
+                loginProtocolFactory.addClientScopeDefaults(resourceRep);
+            }
+            ClientScopeModel app = RepresentationToModel.createClientScope(realm, resourceRep);
             appMap.put(app.getName(), app);
         }
         return appMap;
@@ -555,15 +655,19 @@ public class DefaultExportImportManager implements ExportImportManager {
     private static void importIdentityProviders(RealmRepresentation rep, RealmModel newRealm, KeycloakSession session) {
         if (rep.getIdentityProviders() != null) {
             for (IdentityProviderRepresentation representation : rep.getIdentityProviders()) {
-                newRealm.addIdentityProvider(RepresentationToModel.toModel(newRealm, representation, session));
+                try {
+                    session.identityProviders().create(RepresentationToModel.toModel(newRealm, representation, session));
+                } catch (IllegalArgumentException e) {
+                    throw new ModelValidationException("Invalid configuration for identity provider '" + representation.getAlias() + "': " + e.getMessage());
+                }
             }
         }
     }
 
-    private static void importIdentityProviderMappers(RealmRepresentation rep, RealmModel newRealm) {
+    private static void importIdentityProviderMappers(RealmRepresentation rep, KeycloakSession session) {
         if (rep.getIdentityProviderMappers() != null) {
             for (IdentityProviderMapperRepresentation representation : rep.getIdentityProviderMappers()) {
-                newRealm.addIdentityProviderMapper(RepresentationToModel.toModel(representation));
+                session.identityProviders().createMapper(RepresentationToModel.toModel(representation));
             }
         }
     }
@@ -663,7 +767,6 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
     }
 
-
     public static void renameRealm(RealmModel realm, String name) {
         if (name.equals(realm.getName())) {
             return;
@@ -675,7 +778,7 @@ public class DefaultExportImportManager implements ExportImportManager {
         String oldName = realm.getName();
 
         ClientModel masterApp = realm.getMasterAdminClient();
-        masterApp.setClientId(KeycloakModelUtils.getMasterRealmAdminApplicationClientId(name));
+        masterApp.setClientId(KeycloakModelUtils.getMasterRealmAdminManagementClientId(name));
         realm.setName(name);
 
         ClientModel adminClient = realm.getClientByClientId(Constants.ADMIN_CONSOLE_CLIENT_ID);
@@ -727,9 +830,8 @@ public class DefaultExportImportManager implements ExportImportManager {
 
         // Import attributes first, so the stuff saved directly on representation (displayName, bruteForce etc) has bigger priority
         if (rep.getAttributes() != null) {
-            Set<String> attrsToRemove = new HashSet<>(realm.getAttributes().keySet());
+            Set<String> attrsToRemove = stripRealmAttributesIncludedAsFields(realm.getAttributes()).keySet();
             attrsToRemove.removeAll(rep.getAttributes().keySet());
-            attrsToRemove.removeAll(ModelToRepresentation.REALM_EXCLUDED_ATTRIBUTES);
 
             for (Map.Entry<String, String> entry : rep.getAttributes().entrySet()) {
                 realm.setAttribute(entry.getKey(), entry.getValue());
@@ -749,15 +851,15 @@ public class DefaultExportImportManager implements ExportImportManager {
         if (rep.isUserManagedAccessAllowed() != null) realm.setUserManagedAccessAllowed(rep.isUserManagedAccessAllowed());
         if (rep.isBruteForceProtected() != null) realm.setBruteForceProtected(rep.isBruteForceProtected());
         if (rep.isPermanentLockout() != null) realm.setPermanentLockout(rep.isPermanentLockout());
-        if (rep.getMaxTemporaryLockouts() != null) realm.setMaxTemporaryLockouts(rep.getMaxTemporaryLockouts());
-        if (rep.getMaxFailureWaitSeconds() != null) realm.setMaxFailureWaitSeconds(rep.getMaxFailureWaitSeconds());
-        if (rep.getMinimumQuickLoginWaitSeconds() != null)
-            realm.setMinimumQuickLoginWaitSeconds(rep.getMinimumQuickLoginWaitSeconds());
-        if (rep.getWaitIncrementSeconds() != null) realm.setWaitIncrementSeconds(rep.getWaitIncrementSeconds());
-        if (rep.getQuickLoginCheckMilliSeconds() != null)
-            realm.setQuickLoginCheckMilliSeconds(rep.getQuickLoginCheckMilliSeconds());
-        if (rep.getMaxDeltaTimeSeconds() != null) realm.setMaxDeltaTimeSeconds(rep.getMaxDeltaTimeSeconds());
-        if (rep.getFailureFactor() != null) realm.setFailureFactor(rep.getFailureFactor());
+        if (rep.getMaxTemporaryLockouts() != null) realm.setMaxTemporaryLockouts(checkNonNegativeNumber(rep.getMaxTemporaryLockouts(),"Maximum temporary lockouts"));
+        if (rep.getBruteForceStrategy() != null) realm.setBruteForceStrategy(rep.getBruteForceStrategy());
+        if (rep.getMaxFailureWaitSeconds() != null) realm.setMaxFailureWaitSeconds(checkNonNegativeNumber(rep.getMaxFailureWaitSeconds(),"Maximum failure wait seconds"));
+        if (rep.getMinimumQuickLoginWaitSeconds() != null) realm.setMinimumQuickLoginWaitSeconds(checkNonNegativeNumber(rep.getMinimumQuickLoginWaitSeconds(),"Minimum quick login wait seconds"));
+        if (rep.getWaitIncrementSeconds() != null) realm.setWaitIncrementSeconds(checkNonNegativeNumber(rep.getWaitIncrementSeconds(),"Wait increment seconds"));
+        if (rep.getQuickLoginCheckMilliSeconds() != null) realm.setQuickLoginCheckMilliSeconds(checkNonNegativeNumber(rep.getQuickLoginCheckMilliSeconds().intValue(), "Quick login check milliseconds"));
+        if (rep.getMaxDeltaTimeSeconds() != null) realm.setMaxDeltaTimeSeconds(checkNonNegativeNumber(rep.getMaxDeltaTimeSeconds(),"Maximum delta time seconds"));
+        if (rep.getFailureFactor() != null) realm.setFailureFactor(checkNonNegativeNumber(rep.getFailureFactor(),"Failure factor"));
+        if (rep.getMaxSecondaryAuthFailures() != null) realm.setMaxSecondaryAuthFailures(checkNonNegativeNumber(rep.getMaxSecondaryAuthFailures(), "Maximum secondary authentication failures"));
         if (rep.isRegistrationAllowed() != null) realm.setRegistrationAllowed(rep.isRegistrationAllowed());
         if (rep.isRegistrationEmailAsUsername() != null)
             realm.setRegistrationEmailAsUsername(rep.isRegistrationEmailAsUsername());
@@ -768,6 +870,9 @@ public class DefaultExportImportManager implements ExportImportManager {
         if (rep.isResetPasswordAllowed() != null) realm.setResetPasswordAllowed(rep.isResetPasswordAllowed());
         if (rep.isEditUsernameAllowed() != null) realm.setEditUsernameAllowed(rep.isEditUsernameAllowed());
         if (rep.isOrganizationsEnabled() != null) realm.setOrganizationsEnabled(rep.isOrganizationsEnabled());
+        if (rep.isScimApiEnabled() != null) realm.setScimApiEnabled(rep.isScimApiEnabled());
+        if (rep.isAdminPermissionsEnabled() != null) realm.setAdminPermissionsEnabled(rep.isAdminPermissionsEnabled());
+        if (rep.isVerifiableCredentialsEnabled() != null) realm.setVerifiableCredentialsEnabled(rep.isVerifiableCredentialsEnabled());
         if (rep.getSslRequired() != null) realm.setSslRequired(SslRequired.valueOf(rep.getSslRequired().toUpperCase()));
         if (rep.getAccessCodeLifespan() != null) realm.setAccessCodeLifespan(rep.getAccessCodeLifespan());
         if (rep.getAccessCodeLifespanUserAction() != null)
@@ -843,14 +948,57 @@ public class DefaultExportImportManager implements ExportImportManager {
 
         updateCibaSettings(rep, realm);
         updateParSettings(rep, realm);
+        validateClientAndRealmTimeouts(realm);
         session.clientPolicy().updateRealmModelFromRepresentation(realm, rep);
 
         if (rep.getSmtpServer() != null) {
-            Map<String, String> config = new HashMap(rep.getSmtpServer());
-            if (rep.getSmtpServer().containsKey("password") && ComponentRepresentation.SECRET_VALUE.equals(rep.getSmtpServer().get("password"))) {
-                String passwordValue = realm.getSmtpConfig() != null ? realm.getSmtpConfig().get("password") : null;
-                config.put("password", passwordValue);
+
+            Map<String, String> config = new HashMap<>(rep.getSmtpServer());
+            Map<String, String> existingConfig = realm.getSmtpConfig() != null ? realm.getSmtpConfig() : Map.of();
+
+            boolean destinationUnchanged =
+                    Objects.equals(config.getOrDefault("host", ""), existingConfig.getOrDefault("host", ""))
+                            && Objects.equals(config.getOrDefault("port", "25"), existingConfig.getOrDefault("port", "25"))
+                            && Objects.equals(config.getOrDefault("ssl", "false"), existingConfig.getOrDefault("ssl", "false"))
+                            && Objects.equals(config.getOrDefault("starttls", "false"), existingConfig.getOrDefault("starttls", "false"))
+                            && Objects.equals(config.getOrDefault("from", ""), existingConfig.getOrDefault("from", ""))
+                            && Objects.equals(config.getOrDefault("user", ""), existingConfig.getOrDefault("user", ""))
+                            && Objects.equals(config.getOrDefault("authTokenUrl", ""), existingConfig.getOrDefault("authTokenUrl", ""))
+                            && Objects.equals(config.getOrDefault("authTokenClientId", ""), existingConfig.getOrDefault("authTokenClientId", ""))
+                            && Objects.equals(config.getOrDefault("authTokenScope", ""), existingConfig.getOrDefault("authTokenScope", ""));
+
+            if (!Boolean.parseBoolean(config.get("auth"))) {
+                config.remove("authTokenUrl");
+                config.remove("authTokenScope");
+                config.remove("authTokenClientId");
+                config.remove("authTokenClientSecret");
+                config.remove("password");
+                config.remove("user");
+                config.remove("authType");
+            } else if (config.get("authType") == null || "basic".equals(config.get("authType"))) {
+                if (ComponentRepresentation.SECRET_VALUE.equals(config.get("password"))) {
+                    if (destinationUnchanged) {
+                        config.put("password", existingConfig.get("password"));
+                    } else {
+                        // Destination changed — reject the masked value; require explicit credential
+                        config.remove("password");
+                    }
+                }
+                config.remove("authTokenUrl");
+                config.remove("authTokenScope");
+                config.remove("authTokenClientId");
+                config.remove("authTokenClientSecret");
+            } else if ("token".equals(config.get("authType"))) {
+                if (ComponentRepresentation.SECRET_VALUE.equals(config.get("authTokenClientSecret"))) {
+                    if (destinationUnchanged) {
+                        config.put("authTokenClientSecret", existingConfig.get("authTokenClientSecret"));
+                    } else {
+                        config.remove("authTokenClientSecret");
+                    }
+                }
+                config.remove("password");
             }
+
             realm.setSmtpConfig(config);
         }
 
@@ -897,14 +1045,16 @@ public class DefaultExportImportManager implements ExportImportManager {
         // Import users just to user storage. Don't federate
         UserModel user = UserStoragePrivateUtil.userLocalStorage(session).addUser(newRealm, userRep.getId(), userRep.getUsername(), false, false);
         user.setEnabled(userRep.isEnabled() != null && userRep.isEnabled());
-        user.setCreatedTimestamp(userRep.getCreatedTimestamp());
+        if (userRep.getCreatedTimestamp() != null) {
+            user.setCreatedTimestamp(userRep.getCreatedTimestamp());
+        }
         user.setEmail(userRep.getEmail());
         if (userRep.isEmailVerified() != null) user.setEmailVerified(userRep.isEmailVerified());
         user.setFirstName(userRep.getFirstName());
         user.setLastName(userRep.getLastName());
         user.setFederationLink(userRep.getFederationLink());
         if (userRep.getAttributes() != null) {
-            for (Map.Entry<String, List<String>> entry : userRep.getAttributes().entrySet()) {
+            for (Map.Entry<String, List<String>> entry : userRep.getAttributes().entrySet().stream().sorted(Map.Entry.comparingByKey()).toList()) {
                 List<String> value = entry.getValue();
                 if (value != null) {
                     user.setAttribute(entry.getKey(), new ArrayList<>(value));
@@ -918,10 +1068,10 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
         createCredentials(userRep, session, newRealm, user, false);
         createFederatedIdentities(userRep, session, newRealm, user);
-        createRoleMappings(userRep, user, newRealm);
+        createRoleMappings(session, userRep, user, newRealm);
         if (userRep.getClientConsents() != null) {
             for (UserConsentRepresentation consentRep : userRep.getClientConsents()) {
-                UserConsentModel consentModel = RepresentationToModel.toModel(newRealm, consentRep);
+                UserConsentModel consentModel = RepresentationToModel.toModel(newRealm, consentRep, session);
                 session.users().addConsent(newRealm, user.getId(), consentModel);
             }
         }
@@ -929,6 +1079,9 @@ public class DefaultExportImportManager implements ExportImportManager {
         if (userRep.getNotBefore() != null) {
             session.users().setNotBeforeForUser(newRealm, user, userRep.getNotBefore());
         }
+
+        createVerifiableCredentials(userRep, session, user);
+        createIssuedVerifiableCredentials(userRep, session, user);
 
         if (userRep.getServiceAccountClientId() != null) {
             String clientId = userRep.getServiceAccountClientId();
@@ -958,6 +1111,13 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
 
         user.setSocialLinks(null);
+    }
+
+    public static int checkNonNegativeNumber(int value, String name) {
+        if(value < 0) {
+            throw new ModelException(name + " may not be a negative value");
+        }
+        return value;
     }
 
     private static void convertDeprecatedApplications(KeycloakSession session, RealmRepresentation realm) {
@@ -1153,7 +1313,6 @@ public class DefaultExportImportManager implements ExportImportManager {
         model.setFullSyncPeriod(fedModel.getFullSyncPeriod());
         model.setPriority(fedModel.getPriority());
         model.setChangedSyncPeriod(fedModel.getChangedSyncPeriod());
-        model.setLastSync(fedModel.getLastSync());
         if (fedModel.getConfig() != null) {
             for (Map.Entry<String, String> entry : fedModel.getConfig().entrySet()) {
                 model.getConfig().putSingle(entry.getKey(), entry.getValue());
@@ -1182,66 +1341,89 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
     }
 
-    public static void importGroups(RealmModel realm, RealmRepresentation rep) {
+    public void importGroups(RealmModel realm, RealmRepresentation rep) {
         List<GroupRepresentation> groups = rep.getGroups();
         if (groups == null) return;
 
-        GroupModel parent = null;
-        for (GroupRepresentation group : groups) {
-            importGroup(realm, parent, group);
-        }
+
+        EntityManagers.runInBatch(session, () -> {
+            Batcher batcher = new Batcher();
+            GroupModel parent = null;
+            for (GroupRepresentation group : groups) {
+                importGroup(realm, parent, group);
+                batcher.accept(session);
+            }
+        }, true);
+
     }
 
     private static WebAuthnPolicy getWebAuthnPolicyTwoFactor(RealmRepresentation rep) {
         WebAuthnPolicy webAuthnPolicy = new WebAuthnPolicy();
+        WebAuthnPolicy defaultConfig = WebAuthnPolicyTwoFactorDefaults.get();
 
         String webAuthnPolicyRpEntityName = rep.getWebAuthnPolicyRpEntityName();
         if (webAuthnPolicyRpEntityName == null || webAuthnPolicyRpEntityName.isEmpty())
-            webAuthnPolicyRpEntityName = Constants.DEFAULT_WEBAUTHN_POLICY_RP_ENTITY_NAME;
+            webAuthnPolicyRpEntityName = defaultConfig.getRpEntityName();
         webAuthnPolicy.setRpEntityName(webAuthnPolicyRpEntityName);
 
         List<String> webAuthnPolicySignatureAlgorithms = rep.getWebAuthnPolicySignatureAlgorithms();
         if (webAuthnPolicySignatureAlgorithms == null || webAuthnPolicySignatureAlgorithms.isEmpty())
-            webAuthnPolicySignatureAlgorithms = Arrays.asList(Constants.DEFAULT_WEBAUTHN_POLICY_SIGNATURE_ALGORITHMS.split(","));
+            webAuthnPolicySignatureAlgorithms = defaultConfig.getSignatureAlgorithm();
         webAuthnPolicy.setSignatureAlgorithm(webAuthnPolicySignatureAlgorithms);
 
         String webAuthnPolicyRpId = rep.getWebAuthnPolicyRpId();
         if (webAuthnPolicyRpId == null || webAuthnPolicyRpId.isEmpty())
-            webAuthnPolicyRpId = "";
+            webAuthnPolicyRpId = defaultConfig.getRpId();
         webAuthnPolicy.setRpId(webAuthnPolicyRpId);
 
         String webAuthnPolicyAttestationConveyancePreference = rep.getWebAuthnPolicyAttestationConveyancePreference();
         if (webAuthnPolicyAttestationConveyancePreference == null || webAuthnPolicyAttestationConveyancePreference.isEmpty())
-            webAuthnPolicyAttestationConveyancePreference = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyAttestationConveyancePreference = defaultConfig.getAttestationConveyancePreference();
         webAuthnPolicy.setAttestationConveyancePreference(webAuthnPolicyAttestationConveyancePreference);
 
         String webAuthnPolicyAuthenticatorAttachment = rep.getWebAuthnPolicyAuthenticatorAttachment();
         if (webAuthnPolicyAuthenticatorAttachment == null || webAuthnPolicyAuthenticatorAttachment.isEmpty())
-            webAuthnPolicyAuthenticatorAttachment = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyAuthenticatorAttachment = defaultConfig.getAuthenticatorAttachment();
         webAuthnPolicy.setAuthenticatorAttachment(webAuthnPolicyAuthenticatorAttachment);
 
         String webAuthnPolicyRequireResidentKey = rep.getWebAuthnPolicyRequireResidentKey();
         if (webAuthnPolicyRequireResidentKey == null || webAuthnPolicyRequireResidentKey.isEmpty())
-            webAuthnPolicyRequireResidentKey = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyRequireResidentKey = defaultConfig.getRequireResidentKey();
         webAuthnPolicy.setRequireResidentKey(webAuthnPolicyRequireResidentKey);
+
+        String webAuthnPolicyResidentKey = rep.getWebAuthnPolicyResidentKey();
+        if (webAuthnPolicyResidentKey == null || webAuthnPolicyResidentKey.isEmpty())
+            webAuthnPolicyResidentKey = defaultConfig.getResidentKey();
+        webAuthnPolicy.setResidentKey(webAuthnPolicyResidentKey);
 
         String webAuthnPolicyUserVerificationRequirement = rep.getWebAuthnPolicyUserVerificationRequirement();
         if (webAuthnPolicyUserVerificationRequirement == null || webAuthnPolicyUserVerificationRequirement.isEmpty())
-            webAuthnPolicyUserVerificationRequirement = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyUserVerificationRequirement = defaultConfig.getUserVerificationRequirement();
         webAuthnPolicy.setUserVerificationRequirement(webAuthnPolicyUserVerificationRequirement);
 
         Integer webAuthnPolicyCreateTimeout = rep.getWebAuthnPolicyCreateTimeout();
-        if (webAuthnPolicyCreateTimeout != null) webAuthnPolicy.setCreateTimeout(webAuthnPolicyCreateTimeout);
-        else webAuthnPolicy.setCreateTimeout(0);
+        if (webAuthnPolicyCreateTimeout == null) {
+            webAuthnPolicyCreateTimeout = defaultConfig.getCreateTimeout();
+        }
+        webAuthnPolicy.setCreateTimeout(webAuthnPolicyCreateTimeout);
 
         Boolean webAuthnPolicyAvoidSameAuthenticatorRegister = rep.isWebAuthnPolicyAvoidSameAuthenticatorRegister();
-        if (webAuthnPolicyAvoidSameAuthenticatorRegister != null) webAuthnPolicy.setAvoidSameAuthenticatorRegister(webAuthnPolicyAvoidSameAuthenticatorRegister);
+        if (webAuthnPolicyAvoidSameAuthenticatorRegister == null) {
+            webAuthnPolicyAvoidSameAuthenticatorRegister = defaultConfig.isAvoidSameAuthenticatorRegister();
+        }
+        webAuthnPolicy.setAvoidSameAuthenticatorRegister(webAuthnPolicyAvoidSameAuthenticatorRegister);
 
         List<String> webAuthnPolicyAcceptableAaguids = rep.getWebAuthnPolicyAcceptableAaguids();
-        if (webAuthnPolicyAcceptableAaguids != null) webAuthnPolicy.setAcceptableAaguids(webAuthnPolicyAcceptableAaguids);
+        if (webAuthnPolicyAcceptableAaguids == null) {
+            webAuthnPolicyAcceptableAaguids = defaultConfig.getAcceptableAaguids();
+        }
+        webAuthnPolicy.setAcceptableAaguids(webAuthnPolicyAcceptableAaguids);
 
         List<String> webAuthnPolicyExtraOrigins = rep.getWebAuthnPolicyExtraOrigins();
-        if (webAuthnPolicyExtraOrigins != null) webAuthnPolicy.setExtraOrigins(webAuthnPolicyExtraOrigins);
+        if (webAuthnPolicyExtraOrigins == null) {
+            webAuthnPolicyExtraOrigins = defaultConfig.getExtraOrigins();
+        }
+        webAuthnPolicy.setExtraOrigins(webAuthnPolicyExtraOrigins);
 
         return webAuthnPolicy;
     }
@@ -1249,54 +1431,83 @@ public class DefaultExportImportManager implements ExportImportManager {
 
     private static WebAuthnPolicy getWebAuthnPolicyPasswordless(RealmRepresentation rep) {
         WebAuthnPolicy webAuthnPolicy = new WebAuthnPolicy();
+        WebAuthnPolicy defaultConfig = WebAuthnPolicyPasswordlessDefaults.get();
 
         String webAuthnPolicyRpEntityName = rep.getWebAuthnPolicyPasswordlessRpEntityName();
         if (webAuthnPolicyRpEntityName == null || webAuthnPolicyRpEntityName.isEmpty())
-            webAuthnPolicyRpEntityName = Constants.DEFAULT_WEBAUTHN_POLICY_RP_ENTITY_NAME;
+            webAuthnPolicyRpEntityName = defaultConfig.getRpEntityName();
         webAuthnPolicy.setRpEntityName(webAuthnPolicyRpEntityName);
 
         List<String> webAuthnPolicySignatureAlgorithms = rep.getWebAuthnPolicyPasswordlessSignatureAlgorithms();
         if (webAuthnPolicySignatureAlgorithms == null || webAuthnPolicySignatureAlgorithms.isEmpty())
-            webAuthnPolicySignatureAlgorithms = Arrays.asList(Constants.DEFAULT_WEBAUTHN_POLICY_SIGNATURE_ALGORITHMS.split(","));
+            webAuthnPolicySignatureAlgorithms = defaultConfig.getSignatureAlgorithm();
         webAuthnPolicy.setSignatureAlgorithm(webAuthnPolicySignatureAlgorithms);
 
         String webAuthnPolicyRpId = rep.getWebAuthnPolicyPasswordlessRpId();
         if (webAuthnPolicyRpId == null || webAuthnPolicyRpId.isEmpty())
-            webAuthnPolicyRpId = "";
+            webAuthnPolicyRpId = defaultConfig.getRpId();
         webAuthnPolicy.setRpId(webAuthnPolicyRpId);
 
         String webAuthnPolicyAttestationConveyancePreference = rep.getWebAuthnPolicyPasswordlessAttestationConveyancePreference();
         if (webAuthnPolicyAttestationConveyancePreference == null || webAuthnPolicyAttestationConveyancePreference.isEmpty())
-            webAuthnPolicyAttestationConveyancePreference = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyAttestationConveyancePreference = defaultConfig.getAttestationConveyancePreference();
         webAuthnPolicy.setAttestationConveyancePreference(webAuthnPolicyAttestationConveyancePreference);
 
         String webAuthnPolicyAuthenticatorAttachment = rep.getWebAuthnPolicyPasswordlessAuthenticatorAttachment();
         if (webAuthnPolicyAuthenticatorAttachment == null || webAuthnPolicyAuthenticatorAttachment.isEmpty())
-            webAuthnPolicyAuthenticatorAttachment = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyAuthenticatorAttachment = defaultConfig.getAuthenticatorAttachment();
         webAuthnPolicy.setAuthenticatorAttachment(webAuthnPolicyAuthenticatorAttachment);
 
         String webAuthnPolicyRequireResidentKey = rep.getWebAuthnPolicyPasswordlessRequireResidentKey();
         if (webAuthnPolicyRequireResidentKey == null || webAuthnPolicyRequireResidentKey.isEmpty())
-            webAuthnPolicyRequireResidentKey = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyRequireResidentKey = defaultConfig.getRequireResidentKey();
         webAuthnPolicy.setRequireResidentKey(webAuthnPolicyRequireResidentKey);
+
+        String webAuthnPolicyResidentKey = rep.getWebAuthnPolicyPasswordlessResidentKey();
+        if (webAuthnPolicyResidentKey == null || webAuthnPolicyResidentKey.isEmpty())
+            webAuthnPolicyResidentKey = defaultConfig.getResidentKey();
+        webAuthnPolicy.setResidentKey(webAuthnPolicyResidentKey);
 
         String webAuthnPolicyUserVerificationRequirement = rep.getWebAuthnPolicyPasswordlessUserVerificationRequirement();
         if (webAuthnPolicyUserVerificationRequirement == null || webAuthnPolicyUserVerificationRequirement.isEmpty())
-            webAuthnPolicyUserVerificationRequirement = Constants.DEFAULT_WEBAUTHN_POLICY_NOT_SPECIFIED;
+            webAuthnPolicyUserVerificationRequirement = defaultConfig.getUserVerificationRequirement();
         webAuthnPolicy.setUserVerificationRequirement(webAuthnPolicyUserVerificationRequirement);
 
         Integer webAuthnPolicyCreateTimeout = rep.getWebAuthnPolicyPasswordlessCreateTimeout();
-        if (webAuthnPolicyCreateTimeout != null) webAuthnPolicy.setCreateTimeout(webAuthnPolicyCreateTimeout);
-        else webAuthnPolicy.setCreateTimeout(0);
+        if (webAuthnPolicyCreateTimeout == null) {
+            webAuthnPolicyCreateTimeout = defaultConfig.getCreateTimeout();
+        }
+        webAuthnPolicy.setCreateTimeout(webAuthnPolicyCreateTimeout);
 
         Boolean webAuthnPolicyAvoidSameAuthenticatorRegister = rep.isWebAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister();
-        if (webAuthnPolicyAvoidSameAuthenticatorRegister != null) webAuthnPolicy.setAvoidSameAuthenticatorRegister(webAuthnPolicyAvoidSameAuthenticatorRegister);
+        if (webAuthnPolicyAvoidSameAuthenticatorRegister == null) {
+            webAuthnPolicyAvoidSameAuthenticatorRegister = defaultConfig.isAvoidSameAuthenticatorRegister();
+        }
+        webAuthnPolicy.setAvoidSameAuthenticatorRegister(webAuthnPolicyAvoidSameAuthenticatorRegister);
 
         List<String> webAuthnPolicyAcceptableAaguids = rep.getWebAuthnPolicyPasswordlessAcceptableAaguids();
-        if (webAuthnPolicyAcceptableAaguids != null) webAuthnPolicy.setAcceptableAaguids(webAuthnPolicyAcceptableAaguids);
+        if (webAuthnPolicyAcceptableAaguids == null) {
+            webAuthnPolicyAcceptableAaguids = defaultConfig.getAcceptableAaguids();
+        }
+        webAuthnPolicy.setAcceptableAaguids(webAuthnPolicyAcceptableAaguids);
 
         List<String> webAuthnPolicyExtraOrigins = rep.getWebAuthnPolicyPasswordlessExtraOrigins();
-        if (webAuthnPolicyExtraOrigins != null) webAuthnPolicy.setExtraOrigins(webAuthnPolicyExtraOrigins);
+        if (webAuthnPolicyExtraOrigins == null) {
+            webAuthnPolicyExtraOrigins = defaultConfig.getExtraOrigins();
+        }
+        webAuthnPolicy.setExtraOrigins(webAuthnPolicyExtraOrigins);
+
+        Boolean webAuthnPolicyPasswordlessPasskeysEnabled = rep.getWebAuthnPolicyPasswordlessPasskeysEnabled();
+        if (webAuthnPolicyPasswordlessPasskeysEnabled == null) {
+            webAuthnPolicyPasswordlessPasskeysEnabled = defaultConfig.isPasskeysEnabled();
+        }
+        webAuthnPolicy.setPasskeysEnabled(webAuthnPolicyPasswordlessPasskeysEnabled);
+
+        String webAuthnPolicyPasswordlessMediation = rep.getWebAuthnPolicyPasswordlessMediation();
+        if (webAuthnPolicyPasswordlessMediation == null || webAuthnPolicyPasswordlessMediation.isEmpty()) {
+            webAuthnPolicyPasswordlessMediation = defaultConfig.getMediation();
+        }
+        webAuthnPolicy.setMediation(webAuthnPolicyPasswordlessMediation);
 
         return webAuthnPolicy;
     }
@@ -1392,7 +1603,7 @@ public class DefaultExportImportManager implements ExportImportManager {
         String defaultProvider = null;
         if (rep.getIdentityProviders() != null) {
             for (IdentityProviderRepresentation i : rep.getIdentityProviders()) {
-                if (i.isEnabled() && i.isAuthenticateByDefault()) {
+                if (i.isEnabled() && Booleans.isTrue(i.isAuthenticateByDefault())) {
                     defaultProvider = i.getProviderId();
                     break;
                 }
@@ -1537,7 +1748,7 @@ public class DefaultExportImportManager implements ExportImportManager {
         }
         if (userRep.getClientConsents() != null) {
             for (UserConsentRepresentation consentRep : userRep.getClientConsents()) {
-                UserConsentModel consentModel = RepresentationToModel.toModel(newRealm, consentRep);
+                UserConsentModel consentModel = RepresentationToModel.toModel(newRealm, consentRep, session);
                 federatedStorage.addConsent(newRealm, userRep.getId(), consentModel);
             }
         }
@@ -1589,19 +1800,115 @@ public class DefaultExportImportManager implements ExportImportManager {
             OrganizationProvider provider = session.getProvider(OrganizationProvider.class);
 
             for (OrganizationRepresentation orgRep : Optional.ofNullable(rep.getOrganizations()).orElse(Collections.emptyList())) {
-                OrganizationModel org = provider.create(orgRep.getName(), orgRep.getAlias());
-
-                org.setDomains(orgRep.getDomains().stream().map(r -> new OrganizationDomainModel(r.getName(), r.isVerified())).collect(Collectors.toSet()));
+                OrganizationsValidation.validateUrl(orgRep.getRedirectUrl());
+                OrganizationModel orgModel = provider.create(orgRep.getId(), orgRep.getName(), orgRep.getAlias());
 
                 for (IdentityProviderRepresentation identityProvider : Optional.ofNullable(orgRep.getIdentityProviders()).orElse(Collections.emptyList())) {
-                    IdentityProviderModel idp = newRealm.getIdentityProviderByAlias(identityProvider.getAlias());
-                    provider.addIdentityProvider(org, idp);
+                    IdentityProviderModel idp = session.identityProviders().getByAlias(identityProvider.getAlias());
+                    boolean autoMembership = true;
+                    MembershipType membershipType = MembershipType.UNMANAGED;
+                    List<OrganizationIdentityProviderLinkRepresentation> links = identityProvider.getOrganizationLinks();
+                    if (links != null && !links.isEmpty()) {
+                        OrganizationIdentityProviderLinkRepresentation linkRep = links.get(0);
+                        if (linkRep.getAutoMembership() != null) {
+                            autoMembership = linkRep.getAutoMembership();
+                        }
+                        if (linkRep.getMembershipType() != null) {
+                            membershipType = MembershipType.valueOf(linkRep.getMembershipType());
+                        }
+                    }
+                    provider.addIdentityProvider(orgModel, idp, autoMembership, membershipType);
                 }
 
-                for (UserRepresentation member : Optional.ofNullable(orgRep.getMembers()).orElse(Collections.emptyList())) {
-                    UserModel m = session.users().getUserByUsername(newRealm, member.getUsername());
-                    provider.addMember(org, m);
+                RepresentationToModel.toModel(orgRep, orgModel);
+
+                for (GroupRepresentation groupRep : Optional.ofNullable(orgRep.getGroups()).orElse(Collections.emptyList())) {
+                    importOrganizationGroup(provider, orgModel, newRealm, groupRep, null);
                 }
+
+                for (MemberRepresentation member : Optional.ofNullable(orgRep.getMembers()).orElse(Collections.emptyList())) {
+                    UserModel m = session.users().getUserByUsername(newRealm, member.getUsername());
+                    if (MembershipType.MANAGED.equals(member.getMembershipType())) {
+                        provider.addManagedMember(orgModel, m);
+                    } else {
+                        provider.addMember(orgModel, m);
+                    }
+                    // Import organization group memberships
+                    importOrganizationGroupMemberships(member, m, newRealm);
+                }
+            }
+        }
+    }
+
+    private void validateClientAndRealmTimeouts(RealmModel realm) {
+        if (realm.isRememberMe()) {
+            if (realm.getClientSessionIdleTimeout() > Math.max(realm.getSsoSessionIdleTimeout(), realm.getSsoSessionIdleTimeoutRememberMe())) {
+                throw new ModelException("Client session idle timeout cannot exceed realm SSO session idle timeout and RememberMe idle timeout.");
+            }
+
+            if (realm.getClientSessionMaxLifespan() > Math.max(realm.getSsoSessionMaxLifespan(), realm.getSsoSessionMaxLifespanRememberMe())) {
+                throw new ModelException("Client session max lifespan cannot exceed realm SSO session max lifespan and RememberMe Max span.");
+            }
+        } else {
+            if (realm.getClientSessionIdleTimeout() > realm.getSsoSessionIdleTimeout()) {
+                throw new ModelException("Client Session Idle Timeout cannot be greater than Realm SSO Idle Timeout.");
+            }
+
+            if (realm.getClientSessionMaxLifespan() > realm.getSsoSessionMaxLifespan()) {
+                throw new ModelException("Client session max lifespan cannot exceed realm SSO session max lifespan.");
+            }
+        }
+    }
+
+    private void importOrganizationGroup(OrganizationProvider provider, OrganizationModel organization, RealmModel realm, GroupRepresentation groupRep, GroupModel parent) {
+        GroupModel group = provider.createGroup(organization, groupRep.getId(), groupRep.getName(), parent);
+
+        if (groupRep.getAttributes() != null) {
+            for (Map.Entry<String, List<String>> attr : groupRep.getAttributes().entrySet()) {
+                group.setAttribute(attr.getKey(), attr.getValue());
+            }
+        }
+
+        if (groupRep.getRealmRoles() != null) {
+            for (String roleString : groupRep.getRealmRoles()) {
+                RoleModel role = realm.getRole(roleString.trim());
+                if (role == null) {
+                    role = realm.addRole(roleString.trim());
+                }
+                group.grantRole(role);
+            }
+        }
+        if (groupRep.getClientRoles() != null) {
+            for (Map.Entry<String, List<String>> entry : groupRep.getClientRoles().entrySet()) {
+                ClientModel client = realm.getClientByClientId(entry.getKey());
+                if (client == null) {
+                    throw new RuntimeException("Unable to find client role mappings for client: " + entry.getKey());
+                }
+                for (String roleName : entry.getValue()) {
+                    RoleModel role = client.getRole(roleName.trim());
+                    if (role == null) {
+                        role = client.addRole(roleName.trim());
+                    }
+                    group.grantRole(role);
+                }
+            }
+        }
+
+        if (groupRep.getSubGroups() != null) {
+            for (GroupRepresentation subGroup : groupRep.getSubGroups()) {
+                importOrganizationGroup(provider, organization, realm, subGroup, group);
+            }
+        }
+    }
+
+    private void importOrganizationGroupMemberships(MemberRepresentation memberRep, UserModel user, RealmModel realm) {
+        if (memberRep.getGroups() != null) {
+            for (String groupId : memberRep.getGroups()) {
+                GroupModel group = session.groups().getGroupById(realm, groupId);
+                if (group == null) {
+                    throw new ModelException("Unable to find organization group specified by id: " + groupId);
+                }
+                user.joinGroup(group);
             }
         }
     }

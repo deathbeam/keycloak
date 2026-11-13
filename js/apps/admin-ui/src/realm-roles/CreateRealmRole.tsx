@@ -4,7 +4,7 @@ import { FormProvider, SubmitHandler, useForm } from "react-hook-form";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useAdminClient } from "../admin-client";
-import { useAlerts } from "../components/alert/Alerts";
+import { useAlerts } from "@keycloak/keycloak-ui-shared";
 import { AttributeForm } from "../components/key-value-form/AttributeForm";
 import { RoleForm } from "../components/role-form/RoleForm";
 import { useRealm } from "../context/realm-context/RealmContext";
@@ -39,7 +39,9 @@ export default function CreateRealmRole() {
       }
 
       addAlert(t("roleCreated"), AlertVariant.success);
-      navigate(toRealmRole({ realm, id: createdRole.id!, tab: "details" }));
+      void navigate(
+        toRealmRole({ realm, id: createdRole.id!, tab: "details" }),
+      );
     } catch (error) {
       addError("roleCreateError", error);
     }

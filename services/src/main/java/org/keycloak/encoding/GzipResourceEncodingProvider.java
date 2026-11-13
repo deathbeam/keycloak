@@ -1,89 +1,106 @@
 package org.keycloak.encoding;
 
-import java.io.IOException;
-import java.nio.file.Files;
-import static java.nio.file.StandardCopyOption.REPLACE_EXISTING;
-import org.apache.commons.io.IOUtils;
-import org.jboss.logging.Logger;
-import org.keycloak.models.KeycloakSession;
-
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.util.zip.GZIPOutputStream;
+
+import org.keycloak.theme.ResourceLoader;
+
+import org.apache.commons.io.IOUtils;
+import org.jboss.logging.Logger;
+
+import static java.nio.file.StandardCopyOption.ATOMIC_MOVE;
 
 public class GzipResourceEncodingProvider implements ResourceEncodingProvider {
 
     private static final Logger logger = Logger.getLogger(ResourceEncodingProvider.class);
 
-    private KeycloakSession session;
-    private File cacheDir;
+    private final File cacheDir;
 
-    public GzipResourceEncodingProvider(KeycloakSession session, File cacheDir) {
-        this.session = session;
+    public GzipResourceEncodingProvider(File cacheDir) {
         this.cacheDir = cacheDir;
     }
 
     public InputStream getEncodedStream(StreamSupplier producer, String... path) {
-        StringBuilder sb = new StringBuilder();
-        sb.append(cacheDir.getAbsolutePath());
-        for (String p : path) {
-            sb.append(File.separatorChar);
-            sb.append(p);
-        }
-        sb.append(".gz");
-
-        String filePath = sb.toString();
-
         try {
-            File encodedFile = new File(filePath);
-            if (!encodedFile.getCanonicalPath().startsWith(cacheDir.getCanonicalPath())) {
+            File encodedFile = getResourceFile(path);
+            if (encodedFile == null) {
                 return null;
             }
 
-            if (!encodedFile.exists()) {
-                InputStream is = producer.getInputStream();
-                if (is != null) {
-                    File parent = encodedFile.getParentFile();
-                    if (!parent.isDirectory()) {
-                        parent.mkdirs();
-                    }
-                    File tmpEncodedFile = File.createTempFile(
-                            encodedFile.getName(),
-                            "tmp",
-                            parent);
-
-                    FileOutputStream fos = new FileOutputStream(tmpEncodedFile);
-                    GZIPOutputStream gos = new GZIPOutputStream(fos);
-                    IOUtils.copy(is, gos);
-                    gos.close();
-                    is.close();
-                    try {
-                        Files.move(
-                                tmpEncodedFile.toPath(),
-                                encodedFile.toPath(),
-                                REPLACE_EXISTING);
-                    } catch ( IOException io ) {
-                        logger.warnf("Fail to move %s  %s", tmpEncodedFile.toString(), io);
-                        if (!encodedFile.exists()) {
-                            encodedFile = null;
-                        }
-                    }
-                } else {
-                    encodedFile = null;
-                }
+            if (encodedFile.exists()) {
+                return new FileInputStream(encodedFile);
             }
 
-            return encodedFile != null ? new FileInputStream(encodedFile) : null;
+            return createEncodedStream(producer, encodedFile);
         } catch (Exception e) {
             logger.warn("Failed to encode resource", e);
             return null;
         }
     }
 
+    public File getResourceFile(String... path) {
+        try {
+            return ResourceLoader.getFile(cacheDir, String.join("/", path) + ".gz");
+        } catch (Exception e) {
+            logger.warn("Failed to get encoded resource file", e);
+            return null;
+        }
+    }
+
     public String getEncoding() {
         return "gzip";
+    }
+
+    private InputStream createEncodedStream(StreamSupplier producer, File target) throws IOException {
+        File tmpEncodedFile = null;
+        try (InputStream is = producer.getInputStream()) {
+            if (is == null) {
+                return null;
+            }
+
+            File parent = target.getParentFile();
+            if (!parent.isDirectory()) {
+                if (parent.mkdirs() && !parent.isDirectory()) {
+                    logger.warnf("Fail to create cache directory %s", parent.toString());
+                }
+            }
+            tmpEncodedFile = File.createTempFile(target.getName(), "tmp", parent);
+
+            try (FileOutputStream fos = new FileOutputStream(tmpEncodedFile);
+                 GZIPOutputStream gos = new GZIPOutputStream(fos)) {
+                IOUtils.copy(is, gos);
+            }
+        } catch (IOException e) {
+            if (tmpEncodedFile != null) {
+                Files.deleteIfExists(tmpEncodedFile.toPath());
+            }
+            throw e;
+        }
+
+        // Publish only by atomic rename, so a cached file that exists is always complete
+        try {
+            Files.move(tmpEncodedFile.toPath(), target.toPath(), ATOMIC_MOVE);
+        } catch (IOException io) {
+            try {
+                if (!target.isFile()) {
+                    logger.warnf(io, "Failed to move temporary file to %s, serving it uncached", target.toString());
+                    return new ByteArrayInputStream(Files.readAllBytes(tmpEncodedFile.toPath()));
+                }
+                // An existing target that could not be replaced (e.g. on Windows while another
+                // request reads it) holds the same content
+                logger.debugf(io, "Failed to replace %s, serving the existing file", target.toString());
+            } finally {
+                // File.delete() does not throw, so a failed cleanup cannot fail the request
+                tmpEncodedFile.delete();
+            }
+        }
+        return new FileInputStream(target);
     }
 
 }

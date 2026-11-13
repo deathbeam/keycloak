@@ -17,39 +17,53 @@
 
 package org.keycloak.it.storage.database;
 
-import io.quarkus.test.junit.main.Launch;
-import io.quarkus.test.junit.main.LaunchResult;
-import org.junit.jupiter.api.Test;
 import org.keycloak.common.util.Retry;
 import org.keycloak.connections.infinispan.InfinispanConnectionProvider;
 import org.keycloak.it.junit5.extension.CLIResult;
 import org.keycloak.it.junit5.extension.DistributionTest;
 import org.keycloak.it.junit5.extension.InfinispanContainer;
+import org.keycloak.it.junit5.extension.StopServer.Mode;
 import org.keycloak.it.junit5.extension.WithExternalInfinispan;
+
+import io.quarkus.test.junit.main.Launch;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
 
 import static io.restassured.RestAssured.when;
 
-@DistributionTest(keepAlive = true)
+@DistributionTest(stopServer = Mode.MANUAL)
 @WithExternalInfinispan
+@Tag(DistributionTest.STORAGE)
 public class ExternalInfinispanTest {
 
     @Test
-    @Launch({ "start-dev", "--features=multi-site", "--cache=ispn", "--cache-config-file=../../../test-classes/ExternalInfinispan/kcb-infinispan-cache-remote-store-config.xml", "--spi-connections-infinispan-quarkus-site-name=ISPN" })
-    void testLoadBalancerCheckFailure() {
+    @Launch({
+            "start-dev",
+            "--features=multi-site",
+            "--cache=ispn",
+            "--cache-remote-host=127.0.0.1",
+            "--cache-remote-username=keycloak",
+            "--cache-remote-password=Password1!",
+            "--cache-remote-tls-enabled=false",
+            "--spi-cache-embedded-default-site-name=ISPN",
+            "--spi-load-balancer-check-remote-poll-interval=500",
+            "--verbose"
+    })
+    void testLoadBalancerCheckFailureWithMultiSite() {
         runLoadBalancerCheckFailureTest();
     }
 
     @Test
     @Launch({
             "start-dev",
-            "--features=multi-site,remote-cache",
+            "--features=multi-site,clusterless",
             "--cache=ispn",
-            "--cache-remote-host=localhost",
+            "--cache-remote-host=127.0.0.1",
             "--cache-remote-username=keycloak",
             "--cache-remote-password=Password1!",
-            "--spi-connections-infinispan-quarkus-site-name=ISPN",
+            "--cache-remote-tls-enabled=false",
+            "--spi-cache-embedded-default-site-name=ISPN",
             "--spi-load-balancer-check-remote-poll-interval=500",
-            "-Dkc.cache-remote-tls-enabled=false",
             "--verbose"
     })
     void testLoadBalancerCheckFailureWithRemoteOnlyCaches() {
@@ -71,8 +85,24 @@ public class ExternalInfinispanTest {
     }
 
     @Test
-    @Launch({ "start-dev", "--features=multi-site", "--cache=ispn", "--cache-config-file=../../../test-classes/ExternalInfinispan/kcb-infinispan-cache-remote-store-config.xml", "-Djboss.site.name=ISPN" })
-    void testSiteNameAsSystemProperty(LaunchResult result) {
-        ((CLIResult) result).assertMessage("System property jboss.site.name is in use. Use --spi-connections-infinispan-quarkus-site-name config option instead");
+    @Launch({
+            "start-dev",
+            "--cache=ispn",
+            "-Djboss.site.name=ISPN",
+            "--verbose"
+    })
+    void testSiteNameAsSystemProperty(CLIResult cliResult) {
+        cliResult.assertMessage("System property jboss.site.name is in use. Use --spi-cache-embedded-default-site-name config option instead");
+    }
+
+    @Test
+    @Launch({
+            "start-dev",
+            "--cache=ispn",
+            "-Djboss.node.name=ISPN",
+            "--verbose"
+    })
+    void testNodeNameAsSystemProperty(CLIResult cliResult) {
+        cliResult.assertMessage("System property jboss.node.name is in use. Use --spi-cache-embedded-default-node-name config option instead");
     }
 }

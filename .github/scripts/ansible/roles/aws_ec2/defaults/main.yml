@@ -4,7 +4,8 @@ cluster_size: 1
 
 cidr_ip: "{{ control_host_ip.stdout }}/32"
 
-ami_name: RHEL-8.8.0_HVM-20230503-x86_64-54-Hourly2-GP2
+ami_owner: "309956199498"
+ami_name_pattern: "RHEL-9.6*_HVM*-x86_64-*-Hourly2-GP3"
 
 instance_type: t3.large
 instance_volume_size: 20

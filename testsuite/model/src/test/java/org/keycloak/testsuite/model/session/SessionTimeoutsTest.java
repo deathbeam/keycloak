@@ -19,14 +19,11 @@ package org.keycloak.testsuite.model.session;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
-import org.junit.Assert;
-import org.junit.FixMethodOrder;
-import org.junit.Test;
-import org.junit.runners.MethodSorters;
-import org.keycloak.common.Profile;
+import org.keycloak.common.util.MultiSiteUtils;
 import org.keycloak.common.util.Retry;
 import org.keycloak.common.util.Time;
 import org.keycloak.connections.infinispan.InfinispanConnectionProvider;
+import org.keycloak.infinispan.util.InfinispanUtils;
 import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
 import org.keycloak.models.Constants;
@@ -34,16 +31,25 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RealmProvider;
 import org.keycloak.models.UserModel;
-import org.keycloak.models.UserSessionModel;
 import org.keycloak.models.UserProvider;
+import org.keycloak.models.UserSessionModel;
 import org.keycloak.models.UserSessionProvider;
 import org.keycloak.models.session.UserSessionPersisterProvider;
 import org.keycloak.protocol.oidc.OIDCConfigAttributes;
 import org.keycloak.protocol.oidc.OIDCLoginProtocol;
+import org.keycloak.services.managers.RealmManager;
 import org.keycloak.testsuite.model.HotRodServerRule;
 import org.keycloak.testsuite.model.KeycloakModelTest;
 import org.keycloak.testsuite.model.RequireProvider;
 import org.keycloak.testsuite.model.infinispan.InfinispanTestUtil;
+
+import org.junit.Assert;
+import org.junit.Assume;
+import org.junit.ClassRule;
+import org.junit.FixMethodOrder;
+import org.junit.Test;
+import org.junit.rules.TestRule;
+import org.junit.runners.MethodSorters;
 
 /**
  * <p>
@@ -59,6 +65,14 @@ import org.keycloak.testsuite.model.infinispan.InfinispanTestUtil;
 @RequireProvider(RealmProvider.class)
 public class SessionTimeoutsTest extends KeycloakModelTest {
 
+    @ClassRule
+    public static final TestRule SKIPPED_PROFILES = (base, description) -> {
+        // Embedded caches with the Remote Store uses asynchronous code with event listeners, making the test failing randomly.
+        // It is a deprecated configuration for cross-site, so we skip the tests.
+        Assume.assumeFalse(InfinispanUtils.isEmbeddedInfinispan() && getParameters(HotRodServerRule.class).findFirst().isPresent());
+        return base;
+    };
+
     private String realmId;
 
     @Override
@@ -66,6 +80,7 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
         super.createEnvironment(s);
 
         RealmModel realm = createRealm(s, "test");
+        s.getContext().setRealm(realm);
         realm.setDefaultRole(s.roles().addRealmRole(realm, Constants.DEFAULT_ROLES_ROLE_PREFIX + "-" + realm.getName()));
         this.realmId = realm.getId();
 
@@ -79,10 +94,8 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
     public void cleanEnvironment(KeycloakSession s) {
         InfinispanTestUtil.revertTimeService(s);
         RealmModel realm = s.realms().getRealm(realmId);
-        UserModel user1 = s.users().getUserByUsername(realm, "user1");
-        s.sessions().removeUserSessions(realm);
-        s.sessions().getOfflineUserSessionsStream(realm, user1).forEach(us -> s.sessions().removeOfflineUserSession(realm, us));
-        s.realms().removeRealm(realmId);
+        s.getContext().setRealm(realm);
+        new RealmManager(s).removeRealm(realm);
 
         super.cleanEnvironment(s);
     }
@@ -162,6 +175,7 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
         try {
             final String[] sessions = inComittedTransaction(session -> {
                 RealmModel realm = session.realms().getRealm(realmId);
+                session.getContext().setRealm(realm);
 
                 UserModel user = session.users().getUserByUsername(realm, "user1");
                 UserSessionModel userSession = createUserSession(session, realm, user, offline);
@@ -284,7 +298,7 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
                     return null;
                 });
 
-                if (Profile.isFeatureEnabled(Profile.Feature.PERSISTENT_USER_SESSIONS)) {
+                if (MultiSiteUtils.isPersistentSessionsEnabled()) {
                     // The persistent session will write the update data asynchronously, wait for it to arrive.
                     Retry.executeWithBackoff(iteration -> {
                         withRealm(realmId, (session, realm) -> {
@@ -325,7 +339,8 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
                 Assert.assertNull(getUserSession(session, realm, sessions[0], offline));
                 return null;
             });
-            processExpiration(offline);
+            processExpiration(true);
+            processExpiration(false);
         } finally {
             setTimeOffset(0);
         }
@@ -393,7 +408,7 @@ public class SessionTimeoutsTest extends KeycloakModelTest {
 
     /**
      * This method introduces a delay to allow replication of clientSession cache on site 1 and site 2.
-     * Without the delay these test fails from time to time. This has no effect when tests run without cross-dc
+     * Without the delay these test fails from time to time. This has no effect when tests run without remote Infinispan
      * @param offline boolean Indicates where we work with offline sessions
      */
     private void allowXSiteReplication(boolean offline) {

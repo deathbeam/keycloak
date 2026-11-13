@@ -18,29 +18,22 @@
 package org.keycloak.models.sessions.infinispan.remote;
 
 import java.lang.invoke.MethodHandles;
+import java.util.AbstractMap;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.UUID;
-import java.util.concurrent.CompletionStage;
+import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import io.reactivex.rxjava3.core.Flowable;
-import org.infinispan.client.hotrod.MetadataValue;
-import org.infinispan.client.hotrod.RemoteCache;
-import org.infinispan.commons.util.concurrent.CompletableFutures;
-import org.infinispan.commons.util.concurrent.CompletionStages;
-import org.jboss.logging.Logger;
 import org.keycloak.cluster.ClusterProvider;
 import org.keycloak.common.Profile;
+import org.keycloak.common.util.SecretGenerator;
 import org.keycloak.common.util.Time;
 import org.keycloak.models.AuthenticatedClientSessionModel;
 import org.keycloak.models.ClientModel;
@@ -52,19 +45,29 @@ import org.keycloak.models.UserSessionModel;
 import org.keycloak.models.UserSessionProvider;
 import org.keycloak.models.light.LightweightUserAdapter;
 import org.keycloak.models.session.UserSessionPersisterProvider;
-import org.keycloak.models.sessions.infinispan.changes.remote.RemoteChangeLogTransaction;
-import org.keycloak.models.sessions.infinispan.changes.remote.UserSessionTransaction;
+import org.keycloak.models.sessions.infinispan.ImmutableSession;
 import org.keycloak.models.sessions.infinispan.changes.remote.updater.BaseUpdater;
 import org.keycloak.models.sessions.infinispan.changes.remote.updater.client.AuthenticatedClientSessionUpdater;
-import org.keycloak.models.sessions.infinispan.changes.remote.updater.user.ClientSessionMappingAdapter;
-import org.keycloak.models.sessions.infinispan.changes.remote.updater.user.ClientSessionProvider;
+import org.keycloak.models.sessions.infinispan.changes.remote.updater.user.AuthenticatedClientSessionMapping;
 import org.keycloak.models.sessions.infinispan.changes.remote.updater.user.UserSessionUpdater;
-import org.keycloak.models.sessions.infinispan.entities.AuthenticatedClientSessionEntity;
-import org.keycloak.models.sessions.infinispan.entities.AuthenticatedClientSessionStore;
-import org.keycloak.models.sessions.infinispan.entities.SessionEntity;
-import org.keycloak.models.sessions.infinispan.entities.UserSessionEntity;
+import org.keycloak.models.sessions.infinispan.entities.ClientSessionKey;
+import org.keycloak.models.sessions.infinispan.entities.RemoteAuthenticatedClientSessionEntity;
+import org.keycloak.models.sessions.infinispan.entities.RemoteUserSessionEntity;
+import org.keycloak.models.sessions.infinispan.query.ClientSessionQueries;
+import org.keycloak.models.sessions.infinispan.query.QueryHelper;
+import org.keycloak.models.sessions.infinispan.query.UserSessionQueries;
+import org.keycloak.models.sessions.infinispan.remote.transaction.ClientSessionChangeLogTransaction;
+import org.keycloak.models.sessions.infinispan.remote.transaction.UserSessionChangeLogTransaction;
+import org.keycloak.models.sessions.infinispan.remote.transaction.UserSessionTransaction;
+import org.keycloak.models.sessions.infinispan.util.SessionExpirationPredicates;
 import org.keycloak.models.utils.KeycloakModelUtils;
 import org.keycloak.utils.StreamsUtil;
+
+import io.reactivex.rxjava3.core.Flowable;
+import io.reactivex.rxjava3.core.Maybe;
+import org.infinispan.client.hotrod.RemoteCache;
+import org.infinispan.commons.util.concurrent.CompletionStages;
+import org.jboss.logging.Logger;
 
 import static org.keycloak.models.Constants.SESSION_NOTE_LIGHTWEIGHT_USER;
 
@@ -74,6 +77,7 @@ import static org.keycloak.models.Constants.SESSION_NOTE_LIGHTWEIGHT_USER;
 public class RemoteUserSessionProvider implements UserSessionProvider {
 
     private static final Logger log = Logger.getLogger(MethodHandles.lookup().lookupClass());
+    private static final int MAX_CONCURRENT_REQUESTS = 16;
 
     private final KeycloakSession session;
     private final UserSessionTransaction transaction;
@@ -87,29 +91,25 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public AuthenticatedClientSessionModel createClientSession(RealmModel realm, ClientModel client, UserSessionModel userSession) {
-        var transaction = getClientSessionTransaction(false);
-        var clientSessionId = UUID.randomUUID();
-        var entity = AuthenticatedClientSessionEntity.create(clientSessionId, realm, client, userSession);
-        var model = transaction.create(clientSessionId, entity);
+        var clientTx = getClientSessionTransaction(false);
+        var key = new ClientSessionKey(userSession.getId(), client.getId());
+        var entity = RemoteAuthenticatedClientSessionEntity.create(key, realm.getId(), userSession);
+        var model = clientTx.create(key, entity);
         if (!model.isInitialized()) {
-            model.initialize(userSession, client, transaction);
+            model.initialize(userSession, client, clientTx);
         }
-        userSession.getAuthenticatedClientSessions().put(client.getId(), model);
         return model;
     }
 
     @Override
-    public AuthenticatedClientSessionModel getClientSession(UserSessionModel userSession, ClientModel client, String clientSessionId, boolean offline) {
-        if (clientSessionId == null) {
-            return null;
-        }
-        var transaction = getClientSessionTransaction(offline);
-        var updater = transaction.get(UUID.fromString(clientSessionId));
+    public AuthenticatedClientSessionModel getClientSession(UserSessionModel userSession, ClientModel client, boolean offline) {
+        var clientTx = getClientSessionTransaction(offline);
+        var updater = clientTx.get(new ClientSessionKey(userSession.getId(), client.getId()));
         if (updater == null) {
             return null;
         }
         if (!updater.isInitialized()) {
-            updater.initialize(userSession, client, transaction);
+            updater.initialize(userSession, client, clientTx);
         }
         return updater;
     }
@@ -117,11 +117,11 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
     @Override
     public UserSessionModel createUserSession(String id, RealmModel realm, UserModel user, String loginUsername, String ipAddress, String authMethod, boolean rememberMe, String brokerSessionId, String brokerUserId, UserSessionModel.SessionPersistenceState persistenceState) {
         if (id == null) {
-            id = KeycloakModelUtils.generateId();
+            id = SecretGenerator.SECURE_ID_GENERATOR.get();
         }
 
-        var entity = UserSessionEntity.create(id, realm, user, loginUsername, ipAddress, authMethod, rememberMe, brokerSessionId, brokerUserId);
-        var updater = transaction.getUserSessions().create(id, entity);
+        var entity = RemoteUserSessionEntity.create(id, realm, user, loginUsername, ipAddress, authMethod, rememberMe, brokerSessionId, brokerUserId);
+        var updater = getUserSessionTransaction(false).create(id, entity);
         return initUserSessionUpdater(updater, persistenceState, realm, user, false);
     }
 
@@ -132,28 +132,30 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public Stream<UserSessionModel> getUserSessionsStream(RealmModel realm, UserModel user) {
-        return StreamsUtil.closing(streamUserSessions(new UserAndRealmPredicate(realm.getId(), user.getId()), realm, user, false));
+        return StreamsUtil.closing(streamUserSessionByUserId(realm, user, false));
     }
 
     @Override
     public Stream<UserSessionModel> getUserSessionsStream(RealmModel realm, ClientModel client) {
-        return StreamsUtil.closing(streamUserSessions(new ClientAndRealmPredicate(realm.getId(), client.getId()), realm, null, false));
+        return StreamsUtil.closing(streamUserSessionByClientId(realm, client.getId(), false, null, null));
     }
 
     @Override
     public Stream<UserSessionModel> getUserSessionsStream(RealmModel realm, ClientModel client, Integer firstResult, Integer maxResults) {
-        return StreamsUtil.paginatedStream(getUserSessionsStream(realm, client).sorted(Comparator.comparing(UserSessionModel::getLastSessionRefresh)), firstResult, maxResults);
+        return StreamsUtil.closing(streamUserSessionByClientId(realm, client.getId(), false, firstResult, maxResults));
     }
 
     @Override
     public Stream<UserSessionModel> getUserSessionByBrokerUserIdStream(RealmModel realm, String brokerUserId) {
-        return StreamsUtil.closing(streamUserSessions(new BrokerUserIdAndRealmPredicate(realm.getId(), brokerUserId), realm, null, false));
+        return StreamsUtil.closing(streamUserSessionByBrokerUserId(realm, brokerUserId, false));
     }
 
     @Override
     public UserSessionModel getUserSessionByBrokerSessionId(RealmModel realm, String brokerSessionId) {
-        return StreamsUtil.closing(streamUserSessions(new BrokerSessionIdAndRealmPredicate(realm.getId(), brokerSessionId), realm, null, false))
-                .findFirst()
+        var userTx = getUserSessionTransaction(false);
+        var query = UserSessionQueries.searchByBrokerSessionId(userTx.getCache(), realm.getId(), brokerSessionId);
+        return QueryHelper.fetchSingle(query, userTx::wrapFromProjection)
+                .map(session -> initUserSessionFromQuery(session, realm, null, false))
                 .orElse(null);
     }
 
@@ -165,22 +167,14 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public long getActiveUserSessions(RealmModel realm, ClientModel client) {
-        return StreamsUtil.closing(getUserSessionsStream(realm, client)).count();
+        return computeUserSessionCount(realm, client, false);
     }
 
     @Override
     public Map<String, Long> getActiveClientSessionStats(RealmModel realm, boolean offline) {
-        var userSessions = getUserSessionTransaction(offline);
-        return Flowable.fromPublisher(userSessions.getCache().publishEntriesWithMetadata(null, batchSize))
-                .filter(new RealmPredicate(realm.getId()))
-                .map(Map.Entry::getValue)
-                .map(MetadataValue::getValue)
-                .map(UserSessionEntity::getAuthenticatedClientSessions)
-                .map(AuthenticatedClientSessionStore::keySet)
-                .map(Collection::stream)
-                .flatMap(Flowable::fromStream)
-                .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()))
-                .blockingGet();
+        var query = ClientSessionQueries.activeClientCount(getClientSessionTransaction(offline).getCache(), realm.getId());
+        return QueryHelper.streamAll(query, batchSize, QueryHelper.PROJECTION_TO_STRING_LONG_ENTRY)
+                .collect(Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     @Override
@@ -190,35 +184,17 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public void removeUserSessions(RealmModel realm, UserModel user) {
-        getUserSessionsStream(realm, user).forEach(s -> removeUserSession(realm, s));
+        transaction.removeAllSessionByUserId(realm.getId(), user.getId());
     }
 
-    @Override
-    public void removeAllExpired() {
-        //rely on Infinispan expiration
-    }
-
-    @Override
-    public void removeExpired(RealmModel realm) {
-        //rely on Infinispan expiration
-    }
-
-    @SuppressWarnings("unchecked")
     @Override
     public void removeUserSessions(RealmModel realm) {
-        Predicate<? extends SessionEntity> predicate = e -> Objects.equals(e.getRealmId(), realm.getId());
-        transaction.getUserSessions().removeIf((Predicate<UserSessionEntity>) predicate);
-        transaction.getClientSessions().removeIf((Predicate<AuthenticatedClientSessionEntity>) predicate);
+        transaction.removeAllSessionsByRealmId(realm.getId());
     }
 
-    @SuppressWarnings("unchecked")
     @Override
     public void onRealmRemoved(RealmModel realm) {
-        Predicate<? extends SessionEntity> predicate = e -> Objects.equals(e.getRealmId(), realm.getId());
-        transaction.getUserSessions().removeIf((Predicate<UserSessionEntity>) predicate);
-        transaction.getOfflineUserSessions().removeIf((Predicate<UserSessionEntity>) predicate);
-        transaction.getClientSessions().removeIf((Predicate<AuthenticatedClientSessionEntity>) predicate);
-        transaction.getOfflineClientSessions().removeIf((Predicate<AuthenticatedClientSessionEntity>) predicate);
+        transaction.removeAllSessionsByRealmId(realm.getId());
         var database = session.getProvider(UserSessionPersisterProvider.class);
         if (database != null) {
             database.onRealmRemoved(realm);
@@ -235,13 +211,8 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public UserSessionModel createOfflineUserSession(UserSessionModel userSession) {
-        var entity = UserSessionEntity.createFromModel(userSession);
-
-        int currentTime = Time.currentTime();
-        entity.setStarted(currentTime);
-        entity.setLastSessionRefresh(currentTime);
-
-        var updater = getUserSessionTransaction(true).create(entity.getId(), entity);
+        var entity = RemoteUserSessionEntity.createFromModel(userSession);
+        var updater = getUserSessionTransaction(true).create(userSession.getId(), entity);
         return initUserSessionUpdater(updater, userSession.getPersistenceState(), userSession.getRealm(), userSession.getUser(), true);
     }
 
@@ -257,34 +228,34 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
 
     @Override
     public AuthenticatedClientSessionModel createOfflineClientSession(AuthenticatedClientSessionModel clientSession, UserSessionModel offlineUserSession) {
-        var transaction = getClientSessionTransaction(true);
-        var entity = AuthenticatedClientSessionEntity.createFromModel(clientSession);
-        var model = transaction.create(entity.getId(), entity);
+        var clientTx = getClientSessionTransaction(true);
+        var key = new ClientSessionKey(offlineUserSession.getId(), clientSession.getClient().getId());
+        var entity = RemoteAuthenticatedClientSessionEntity.createFromModel(key, clientSession);
+        var model = clientTx.create(key, entity);
         if (!model.isInitialized()) {
-            model.initialize(offlineUserSession, clientSession.getClient(), transaction);
+            model.initialize(offlineUserSession, clientSession.getClient(), clientTx);
         }
-        offlineUserSession.getAuthenticatedClientSessions().put(clientSession.getClient().getId(), model);
         return model;
     }
 
     @Override
     public Stream<UserSessionModel> getOfflineUserSessionsStream(RealmModel realm, UserModel user) {
-        return StreamsUtil.closing(streamUserSessions(new UserAndRealmPredicate(realm.getId(), user.getId()), realm, user, true));
+        return StreamsUtil.closing(streamUserSessionByUserId(realm, user, true));
     }
 
     @Override
     public Stream<UserSessionModel> getOfflineUserSessionByBrokerUserIdStream(RealmModel realm, String brokerUserId) {
-        return StreamsUtil.closing(streamUserSessions(new BrokerUserIdAndRealmPredicate(realm.getId(), brokerUserId), realm, null, true));
+        return StreamsUtil.closing(streamUserSessionByBrokerUserId(realm, brokerUserId, true));
     }
 
     @Override
     public long getOfflineSessionsCount(RealmModel realm, ClientModel client) {
-        return StreamsUtil.closing(streamUserSessions(new ClientAndRealmPredicate(realm.getId(), client.getId()), realm, null, true)).count();
+        return computeUserSessionCount(realm, client, true);
     }
 
     @Override
     public Stream<UserSessionModel> getOfflineUserSessionsStream(RealmModel realm, ClientModel client, Integer firstResult, Integer maxResults) {
-        return StreamsUtil.closing(StreamsUtil.paginatedStream(streamUserSessions(new ClientAndRealmPredicate(realm.getId(), client.getId()), realm, null, true), firstResult, maxResults));
+        return StreamsUtil.closing(streamUserSessionByClientId(realm, client.getId(), true, firstResult, maxResults));
     }
 
     @Override
@@ -295,11 +266,6 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
     @Override
     public KeycloakSession getKeycloakSession() {
         return session;
-    }
-
-    @Override
-    public void importUserSessions(Collection<UserSessionModel> persistentUserSessions, boolean offline) {
-        //no-op
     }
 
     @Override
@@ -314,6 +280,59 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
             migrateUserSessions(false);
         }
 
+    }
+
+    @Override
+    public Stream<UserSessionModel> readOnlyStreamOfflineUserSessions(RealmModel realm) {
+        return readOnlyStream(realm, true);
+    }
+
+    @Override
+    public Stream<UserSessionModel> readOnlyStreamUserSessions(RealmModel realm) {
+        return readOnlyStream(realm, false);
+    }
+
+    @Override
+    public Stream<UserSessionModel> readOnlyStreamOfflineUserSessions(RealmModel realm, ClientModel client, int skip, int maxResults) {
+        return readOnlyStream(realm, client, true, skip, maxResults);
+    }
+
+    @Override
+    public Stream<UserSessionModel> readOnlyStreamUserSessions(RealmModel realm, ClientModel client, int skip, int maxResults) {
+        return readOnlyStream(realm, client, false, skip, maxResults);
+    }
+
+    private Stream<UserSessionModel> readOnlyStream(RealmModel realm, boolean offline) {
+        var expiration = new SessionExpirationPredicates(realm, offline, Time.currentTimeMillis());
+        var query = UserSessionQueries.searchByRealm(getUserSessionTransaction(offline).getCache(), realm.getId());
+        var clientSessionCache = getClientSessionTransaction(offline).getCache();
+        //not very efficient at all.
+        return Flowable.fromStream(QueryHelper.streamAll(query, batchSize, Function.identity()))
+                .buffer(128)
+                .blockingStream()
+                .flatMap(us -> ImmutableSession.copyOf(session, us, expiration, clientSessionCache, batchSize)).filter(Objects::nonNull);
+    }
+
+    private Stream<UserSessionModel> readOnlyStream(RealmModel realm, ClientModel client, boolean offline, int skip, int maxResults) {
+        if (maxResults == 0) {
+            return Stream.empty();
+        }
+        var expiration = new SessionExpirationPredicates(realm, offline, Time.currentTimeMillis());
+        var clientSessionCache = getClientSessionTransaction(offline).getCache();
+        var userSessionIdQuery = ClientSessionQueries.fetchUserSessionIdForClientId(clientSessionCache, realm.getId(), client.getId());
+        if (skip > 0) {
+            userSessionIdQuery.startOffset(skip);
+        }
+        if (maxResults > 0) {
+            userSessionIdQuery.maxResults(maxResults);
+        }
+        var userSessionCache = getUserSessionTransaction(offline).getCache();
+        return Flowable.fromIterable(QueryHelper.toCollection(userSessionIdQuery, QueryHelper.SINGLE_PROJECTION_TO_STRING))
+                .buffer(128)
+                .flatMapMaybe(sessionId -> Maybe.fromCompletionStage(userSessionCache.getAllAsync(Set.copyOf(sessionId))), false, MAX_CONCURRENT_REQUESTS)
+                .map(Map::values)
+                .blockingStream()
+                .flatMap(entity -> ImmutableSession.copyOf(session, entity, expiration, clientSessionCache, batchSize));
     }
 
     private void migrateUserSessions(boolean offline) {
@@ -340,13 +359,14 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
             var stage = CompletionStages.aggregateCompletionStage();
             database.loadUserSessionsStream(-1, batchSize, offline, "")
                     .forEach(userSessionModel -> {
-                        var userSessionEntity = UserSessionEntity.createFromModel(userSessionModel);
+                        var userSessionEntity = RemoteUserSessionEntity.createFromModel(userSessionModel);
                         stage.dependsOn(userSessionCache.putIfAbsentAsync(userSessionModel.getId(), userSessionEntity));
                         userSessionBuffer.add(userSessionModel.getId());
                         for (var clientSessionModel : userSessionModel.getAuthenticatedClientSessions().values()) {
-                            clientSessionBuffer.add(Map.entry(userSessionModel.getId(), clientSessionModel.getId()));
-                            var clientSessionEntity = AuthenticatedClientSessionEntity.createFromModel(clientSessionModel);
-                            stage.dependsOn(clientSessionCache.putIfAbsentAsync(clientSessionEntity.getId(), clientSessionEntity));
+                            var clientSessionKey = new ClientSessionKey(userSessionModel.getId(), clientSessionModel.getClient().getId());
+                            clientSessionBuffer.add(Map.entry(clientSessionKey.userSessionId(), clientSessionKey.clientId()));
+                            var clientSessionEntity = RemoteAuthenticatedClientSessionEntity.createFromModel(clientSessionKey, clientSessionModel);
+                            stage.dependsOn(clientSessionCache.putIfAbsentAsync(clientSessionKey, clientSessionEntity));
                         }
                     });
             CompletionStages.join(stage.freeze());
@@ -378,64 +398,46 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
         if (updater.isInitialized()) {
             return updater;
         }
-        UserModel user = session.users().getUserById(realm, updater.getValue().getUser());
+        UserModel user = session.users().getUserById(realm, updater.getValue().getUserId());
         return initUserSessionUpdater(updater, UserSessionModel.SessionPersistenceState.PERSISTENT, realm, user, offline);
     }
 
     private void internalRemoveUserSession(UserSessionModel userSession, boolean offline) {
-        var clientSessionTransaction = getClientSessionTransaction(offline);
-        var userSessionTransaction = getUserSessionTransaction(offline);
-        userSession.getAuthenticatedClientSessions().values()
-                .stream()
-                .filter(Objects::nonNull) // we need to filter, it may not be a UserSessionUpdater class.
-                .map(AuthenticatedClientSessionModel::getId)
-                .filter(Objects::nonNull) // we need to filter, it may not be a AuthenticatedClientSessionUpdater class.
-                .map(UUID::fromString)
-                .forEach(clientSessionTransaction::remove);
-        userSessionTransaction.remove(userSession.getId());
+        transaction.removeUserSessionById(userSession.getId(), offline);
     }
 
-    private Stream<UserSessionModel> streamUserSessions(InternalUserSessionPredicate predicate, RealmModel realm, UserModel user, boolean offline) {
-        var userSessions = getUserSessionTransaction(offline);
-        return Flowable.fromPublisher(userSessions.getCache().publishEntriesWithMetadata(null, batchSize))
-                .filter(predicate)
-                .map(userSessions::wrap)
-                .map(s -> initFromStream(s, realm, user, offline))
-                .filter(Optional::isPresent)
-                .map(Optional::get)
-                .map(UserSessionModel.class::cast)
-                .blockingStream(batchSize);
+    private UserSessionChangeLogTransaction getUserSessionTransaction(boolean offline) {
+        return transaction.getUserSessions(offline);
     }
 
-    private RemoteChangeLogTransaction<String, UserSessionEntity, UserSessionUpdater> getUserSessionTransaction(boolean offline) {
-        return offline ? transaction.getOfflineUserSessions() : transaction.getUserSessions();
+    private ClientSessionChangeLogTransaction getClientSessionTransaction(boolean offline) {
+        return transaction.getClientSessions(offline);
     }
 
-    private RemoteChangeLogTransaction<UUID, AuthenticatedClientSessionEntity, AuthenticatedClientSessionUpdater> getClientSessionTransaction(boolean offline) {
-        return offline ? transaction.getOfflineClientSessions() : transaction.getClientSessions();
-    }
-
-    private Optional<UserSessionUpdater> initFromStream(UserSessionUpdater updater, RealmModel realm, UserModel user, boolean offline) {
-        if (updater.isInitialized()) {
-            return Optional.of(updater);
-        }
+    private UserSessionUpdater initUserSessionFromQuery(UserSessionUpdater updater, RealmModel realm, UserModel user, boolean offline) {
+        assert updater != null;
         assert realm != null;
-        if (user == null) {
-            user = session.users().getUserById(realm, updater.getValue().getUser());
+        if (updater.isInvalid()) {
+            return null;
         }
-        return Optional.ofNullable(initUserSessionUpdater(updater, UserSessionModel.SessionPersistenceState.PERSISTENT, realm, user, offline));
+        if (updater.isInitialized()) {
+            return updater;
+        }
+        if (user == null) {
+            user = session.users().getUserById(realm, updater.getValue().getUserId());
+        }
+        return initUserSessionUpdater(updater, UserSessionModel.SessionPersistenceState.PERSISTENT, realm, user, offline);
     }
 
     private UserSessionUpdater initUserSessionUpdater(UserSessionUpdater updater, UserSessionModel.SessionPersistenceState persistenceState, RealmModel realm, UserModel user, boolean offline) {
-        var provider = new RemoteClientSessionAdapterProvider(getClientSessionTransaction(offline), updater);
         if (user instanceof LightweightUserAdapter) {
-            updater.initialize(persistenceState, realm, user, provider);
+            updater.initialize(persistenceState, realm, user, new ClientSessionMapping(updater));
             return checkExpiration(updater);
         }
         // copied from org.keycloak.models.sessions.infinispan.InfinispanUserSessionProvider
         if (Profile.isFeatureEnabled(Profile.Feature.TRANSIENT_USERS) && updater.getNotes().containsKey(SESSION_NOTE_LIGHTWEIGHT_USER)) {
             LightweightUserAdapter lua = LightweightUserAdapter.fromString(session, realm, updater.getNotes().get(SESSION_NOTE_LIGHTWEIGHT_USER));
-            updater.initialize(persistenceState, realm, lua, provider);
+            updater.initialize(persistenceState, realm, lua, new ClientSessionMapping(updater));
             lua.setUpdateHandler(lua1 -> {
                 if (lua == lua1) {  // Ensure there is no conflicting user model, only the latest lightweight user can be used
                     updater.setNote(SESSION_NOTE_LIGHTWEIGHT_USER, lua1.serialize());
@@ -449,128 +451,171 @@ public class RemoteUserSessionProvider implements UserSessionProvider {
             internalRemoveUserSession(updater, offline);
             return null;
         }
-        updater.initialize(persistenceState, realm, user, provider);
+        updater.initialize(persistenceState, realm, user, new ClientSessionMapping(updater));
         return checkExpiration(updater);
     }
 
-    private <K, V, T extends BaseUpdater<K, V>> T checkExpiration(T updater) {
+    private AuthenticatedClientSessionModel initClientSessionUpdater(AuthenticatedClientSessionUpdater updater, UserSessionUpdater userSession) {
+        if (updater == null || updater.isInvalid()) {
+            return null;
+        }
+        var client = userSession.getRealm().getClientById(updater.getKey().clientId());
+        if (client == null) {
+            updater.markDeleted();
+            return null;
+        }
+        if (updater.isInitialized()) {
+            return updater;
+        }
+        updater.initialize(userSession, client, getClientSessionTransaction(userSession.isOffline()));
+        return checkExpiration(updater);
+    }
+
+    private long computeUserSessionCount(RealmModel realm, ClientModel client, boolean offline) {
+        var query = ClientSessionQueries.countClientSessions(getClientSessionTransaction(offline).getCache(), realm.getId(), client.getId());
+        return QueryHelper.fetchSingle(query, QueryHelper.SINGLE_PROJECTION_TO_LONG).orElse(0L);
+    }
+
+    private Stream<UserSessionModel> streamUserSessionByUserId(RealmModel realm, UserModel user, boolean offline) {
+        var userTx = getUserSessionTransaction(offline);
+        var query = UserSessionQueries.searchByUserId(userTx.getCache(), realm.getId(), user.getId());
+        return QueryHelper.streamAll(query, batchSize, userTx::wrapFromProjection)
+                .map(session -> initUserSessionFromQuery(session, realm, user, offline))
+                .filter(Objects::nonNull)
+                .map(UserSessionModel.class::cast);
+    }
+
+    private Stream<UserSessionModel> streamUserSessionByBrokerUserId(RealmModel realm, String brokerUserId, boolean offline) {
+        var userTx = getUserSessionTransaction(offline);
+        var query = UserSessionQueries.searchByBrokerUserId(userTx.getCache(), realm.getId(), brokerUserId);
+        return QueryHelper.streamAll(query, batchSize, userTx::wrapFromProjection)
+                .map(session -> initUserSessionFromQuery(session, realm, null, offline))
+                .filter(Objects::nonNull)
+                .map(UserSessionModel.class::cast);
+    }
+
+    private Stream<UserSessionModel> streamUserSessionByClientId(RealmModel realm, String clientId, boolean offline, Integer offset, Integer maxResults) {
+        var userSessionIdQuery = ClientSessionQueries.fetchUserSessionIdForClientId(getClientSessionTransaction(offline).getCache(), realm.getId(), clientId);
+        if (offset != null && offset > -1) {
+            userSessionIdQuery.startOffset(offset);
+        }
+        userSessionIdQuery.maxResults(maxResults == null || maxResults == -1 ? Integer.MAX_VALUE : maxResults);
+        var userSessionTx = getUserSessionTransaction(offline);
+        return Flowable.fromIterable(QueryHelper.toCollection(userSessionIdQuery, QueryHelper.SINGLE_PROJECTION_TO_STRING))
+                .flatMapMaybe(userSessionTx::maybeGet, false, MAX_CONCURRENT_REQUESTS)
+                .blockingStream(batchSize)
+                .map(session -> initUserSessionFromQuery(session, realm, null, offline))
+                .filter(Objects::nonNull)
+                .map(UserSessionModel.class::cast);
+    }
+
+    private static <K, V, T extends BaseUpdater<K, V>> T checkExpiration(T updater) {
         var expiration = updater.computeExpiration();
         if (expiration.isExpired()) {
-            updater.markDeleted();
+            updater.markExpired();
             return null;
         }
         return updater;
     }
 
-    private record RealmPredicate(String realmId) implements InternalUserSessionPredicate {
+    private class ClientSessionMapping extends AbstractMap<String, AuthenticatedClientSessionModel> implements Consumer<RemoteAuthenticatedClientSessionEntity>, AuthenticatedClientSessionMapping {
 
-        @Override
-        public boolean testUserSession(UserSessionEntity userSession) {
-            return Objects.equals(userSession.getRealmId(), realmId);
-        }
-    }
-
-    private interface InternalUserSessionPredicate extends io.reactivex.rxjava3.functions.Predicate<Map.Entry<String, MetadataValue<UserSessionEntity>>> {
-
-        @Override
-        default boolean test(Map.Entry<String, MetadataValue<UserSessionEntity>> e) {
-            return testUserSession(e.getValue().getValue());
-        }
-
-        boolean testUserSession(UserSessionEntity userSession);
-    }
-
-    private record UserAndRealmPredicate(String realmId, String userId) implements InternalUserSessionPredicate {
-
-        @Override
-        public boolean testUserSession(UserSessionEntity userSession) {
-            return Objects.equals(userSession.getRealmId(), realmId) && Objects.equals(userSession.getUser(), userId);
-        }
-
-    }
-
-    private record ClientAndRealmPredicate(String realmId, String clientId) implements InternalUserSessionPredicate {
-
-        @Override
-        public boolean testUserSession(UserSessionEntity userSession) {
-            return Objects.equals(userSession.getRealmId(), realmId) && userSession.getAuthenticatedClientSessions().containsKey(clientId);
-        }
-    }
-
-    private record BrokerUserIdAndRealmPredicate(String realmId, String brokerUserId) implements InternalUserSessionPredicate {
-
-        @Override
-        public boolean testUserSession(UserSessionEntity userSession) {
-            return Objects.equals(userSession.getRealmId(), realmId) && Objects.equals(userSession.getBrokerUserId(), brokerUserId);
-        }
-    }
-
-    private record BrokerSessionIdAndRealmPredicate(String realmId,
-                                                    String brokeSessionId) implements InternalUserSessionPredicate {
-
-        @Override
-        public boolean testUserSession(UserSessionEntity userSession) {
-            return Objects.equals(userSession.getRealmId(), realmId) && Objects.equals(userSession.getBrokerSessionId(), brokeSessionId);
-        }
-    }
-
-    private class RemoteClientSessionAdapterProvider implements ClientSessionProvider, UserSessionUpdater.ClientSessionAdapterFactory {
-
-        private final RemoteChangeLogTransaction<UUID, AuthenticatedClientSessionEntity, AuthenticatedClientSessionUpdater> transaction;
         private final UserSessionUpdater userSession;
+        private boolean coldCache = true;
 
-        private RemoteClientSessionAdapterProvider(RemoteChangeLogTransaction<UUID, AuthenticatedClientSessionEntity, AuthenticatedClientSessionUpdater> transaction, UserSessionUpdater userSession) {
-            this.transaction = transaction;
+        ClientSessionMapping(UserSessionUpdater userSession) {
             this.userSession = userSession;
         }
 
         @Override
-        public AuthenticatedClientSessionModel getClientSession(String clientId, UUID clientSessionId) {
-            if (clientId == null || clientSessionId == null) {
-                return null;
-            }
-            var client = userSession.getRealm().getClientById(clientId);
-            if (client == null) {
-                return null;
-            }
-            return initialize(client, transaction.get(clientSessionId));
+        public AuthenticatedClientSessionModel get(Object key) {
+            var updater = getTransaction().get(keyForClientId(key));
+            return initClientSessionUpdater(updater, userSession);
         }
 
         @Override
-        public CompletionStage<AuthenticatedClientSessionModel> getClientSessionAsync(String clientId, UUID clientSessionId) {
-            if (clientId == null || clientSessionId == null) {
-                return CompletableFutures.completedNull();
-            }
-            var client = userSession.getRealm().getClientById(clientId);
-            if (client == null) {
-                return CompletableFutures.completedNull();
-            }
-            return transaction.getAsync(clientSessionId).thenApply(updater -> initialize(client, updater));
+        public AuthenticatedClientSessionModel remove(Object key) {
+            getTransaction().remove(keyForClientId(key));
+            return null;
         }
 
         @Override
-        public void removeClientSession(UUID clientSessionId) {
-            if (clientSessionId == null) {
+        public boolean containsKey(Object key) {
+            return get(key) != null;
+        }
+
+        @SuppressWarnings("NullableProblems")
+        @Override
+        public Set<Entry<String, AuthenticatedClientSessionModel>> entrySet() {
+            if (coldCache) {
+                fetchAndCacheClientSessions();
+                coldCache = false;
+            }
+            // iterate from the locally cached data.
+            return getTransaction().getClientSessions()
+                    .filter(this::isFromUserSession)
+                    .map(this::initialize)
+                    .filter(Objects::nonNull)
+                    .map(RemoteUserSessionProvider::toMapEntry)
+                    .collect(Collectors.toSet());
+        }
+
+        private ClientSessionKey keyForClientId(String clientId) {
+            return new ClientSessionKey(getUserSessionId(), clientId);
+        }
+
+        private ClientSessionKey keyForClientId(Object clientId) {
+            return keyForClientId(String.valueOf(clientId));
+        }
+
+        private ClientSessionKey keyForClientId(Object[] projection) {
+            assert projection.length == 1;
+            return keyForClientId(String.valueOf(projection[0]));
+        }
+
+        private void fetchAndCacheClientSessions() {
+            var query = ClientSessionQueries.fetchClientSessions(getTransaction().getCache(), getUserSessionId());
+            QueryHelper.streamAll(query, batchSize, Function.identity()).forEach(this);
+        }
+
+        @Override
+        public void accept(RemoteAuthenticatedClientSessionEntity entity) {
+            getTransaction().wrapFromProjection(entity);
+        }
+
+        private ClientSessionChangeLogTransaction getTransaction() {
+            return getClientSessionTransaction(userSession.isOffline());
+        }
+
+        private String getUserSessionId() {
+            return userSession.getKey();
+        }
+
+        private boolean isFromUserSession(AuthenticatedClientSessionUpdater updater) {
+            return Objects.equals(getUserSessionId(), updater.getValue().getUserSessionId());
+        }
+
+        private AuthenticatedClientSessionModel initialize(AuthenticatedClientSessionUpdater updater) {
+            return initClientSessionUpdater(updater, userSession);
+        }
+
+        @Override
+        public void onUserSessionRestart() {
+            if (coldCache) {
+                // not all sessions cached in the transaction, we fetch the client ID and mark all them as deleted.
+                var query = ClientSessionQueries.fetchClientSessionsIds(getTransaction().getCache(), getUserSessionId());
+                QueryHelper.streamAll(query, batchSize, this::keyForClientId)
+                        .forEach(getTransaction()::remove);
+                coldCache = false;
                 return;
             }
-            transaction.remove(clientSessionId);
-        }
-
-        private AuthenticatedClientSessionModel initialize(ClientModel client, AuthenticatedClientSessionUpdater updater) {
-            if (updater == null) {
-                return null;
-            }
-            if (updater.isInitialized()) {
-                return updater;
-            }
-            updater.initialize(userSession, client, transaction);
-            return checkExpiration(updater);
-        }
-
-        @Override
-        public ClientSessionMappingAdapter create(AuthenticatedClientSessionStore clientSessionStore) {
-            return new ClientSessionMappingAdapter(clientSessionStore, this);
+            getTransaction().getClientSessions()
+                    .filter(this::isFromUserSession)
+                    .forEach(BaseUpdater::markDeleted);
         }
     }
 
+    private static Map.Entry<String, AuthenticatedClientSessionModel> toMapEntry(AuthenticatedClientSessionModel model) {
+        return Map.entry(model.getClient().getId(), model);
+    }
 }

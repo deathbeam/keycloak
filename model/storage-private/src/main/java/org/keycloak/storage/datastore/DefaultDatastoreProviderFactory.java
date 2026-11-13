@@ -17,38 +17,46 @@
 
 package org.keycloak.storage.datastore;
 
-import org.jboss.logging.Logger;
+import java.util.Arrays;
+import java.util.List;
+
 import org.keycloak.Config;
 import org.keycloak.Config.Scope;
 import org.keycloak.migration.MigrationModelManager;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.models.utils.PostMigrationEvent;
+import org.keycloak.provider.ProviderConfigProperty;
+import org.keycloak.provider.ProviderConfigurationBuilder;
 import org.keycloak.provider.ProviderEvent;
 import org.keycloak.provider.ProviderEventListener;
 import org.keycloak.services.scheduled.ClearExpiredAdminEvents;
 import org.keycloak.services.scheduled.ClearExpiredClientInitialAccessTokens;
 import org.keycloak.services.scheduled.ClearExpiredEvents;
+import org.keycloak.services.scheduled.ClearExpiredIssuedVerifiableCredentials;
+import org.keycloak.services.scheduled.ClearExpiredRevokedTokens;
 import org.keycloak.services.scheduled.ClearExpiredUserSessions;
 import org.keycloak.services.scheduled.ClusterAwareScheduledTaskRunner;
 import org.keycloak.storage.DatastoreProvider;
 import org.keycloak.storage.DatastoreProviderFactory;
 import org.keycloak.storage.StoreMigrateRepresentationEvent;
-import org.keycloak.storage.StoreSyncEvent;
-import org.keycloak.storage.managers.UserStorageSyncManager;
+import org.keycloak.storage.UserStorageEventListener;
 import org.keycloak.timer.ScheduledTask;
 import org.keycloak.timer.TimerProvider;
-import java.util.Arrays;
-import java.util.List;
+
+import org.jboss.logging.Logger;
 
 public class DefaultDatastoreProviderFactory implements DatastoreProviderFactory, ProviderEventListener {
 
     private static final String PROVIDER_ID = "legacy";
 
+    public static final String ALLOW_MIGRATE_EXISTING_DB_TO_SNAPSHOT_OPTION = "allowMigrateExistingDatabaseToSnapshot";
+
     private static final Logger logger = Logger.getLogger(DefaultDatastoreProviderFactory.class);
 
     private long clientStorageProviderTimeout;
     private long roleStorageProviderTimeout;
+    private boolean allowMigrateExistingDatabaseToSnapshot;
     private Runnable onClose;
 
     @Override
@@ -60,12 +68,18 @@ public class DefaultDatastoreProviderFactory implements DatastoreProviderFactory
     public void init(Scope config) {
         clientStorageProviderTimeout = Config.scope("client").getLong("storageProviderTimeout", 3000L);
         roleStorageProviderTimeout = Config.scope("role").getLong("storageProviderTimeout", 3000L);
+        allowMigrateExistingDatabaseToSnapshot = config.getBoolean(ALLOW_MIGRATE_EXISTING_DB_TO_SNAPSHOT_OPTION, false);
     }
 
     @Override
     public void postInit(KeycloakSessionFactory factory) {
         factory.register(this);
-        onClose = () -> factory.unregister(this);
+        UserStorageEventListener userStorageEventListener = new UserStorageEventListener(factory);
+        factory.register(userStorageEventListener);
+        onClose = () -> {
+            factory.unregister(this);
+            factory.unregister(userStorageEventListener);
+        };
     }
 
     @Override
@@ -79,7 +93,21 @@ public class DefaultDatastoreProviderFactory implements DatastoreProviderFactory
     public String getId() {
         return PROVIDER_ID;
     }
-    
+
+    @Override
+    public List<ProviderConfigProperty> getConfigMetadata() {
+        return ProviderConfigurationBuilder.create()
+                .property()
+                .name(ALLOW_MIGRATE_EXISTING_DB_TO_SNAPSHOT_OPTION)
+                .type("boolean")
+                .helpText("By default, it is not allowed to run the snapshot/development server against the database, which was previously migrated to some officially released server version. As an attempt of doing this " +
+                        "indicates that you are trying to run development server against production database, which can result in a loss or corruption of data, and also does not allow upgrading. If it is really intended, you can use this option, which will allow to use " +
+                        "nightly/development server against production database when explicitly switch to true. This option is recommended just in the development environments and should be never used in the production!")
+                .defaultValue(false)
+                .add()
+                .build();
+    }
+
     public long getClientStorageProviderTimeout() {
         return clientStorageProviderTimeout;
     }
@@ -88,45 +116,55 @@ public class DefaultDatastoreProviderFactory implements DatastoreProviderFactory
         return roleStorageProviderTimeout;
     }
 
+    boolean isAllowMigrateExistingDatabaseToSnapshot() {
+        return allowMigrateExistingDatabaseToSnapshot;
+    }
+
     @Override
     public void onEvent(ProviderEvent event) {
         if (event instanceof PostMigrationEvent) {
             setupScheduledTasks(((PostMigrationEvent) event).getFactory());
-        } else if (event instanceof StoreSyncEvent) {
-            StoreSyncEvent ev = (StoreSyncEvent) event;
-            UserStorageSyncManager.notifyToRefreshPeriodicSyncAll(ev.getSession(), ev.getRealm(), ev.getRemoved());
         } else if (event instanceof StoreMigrateRepresentationEvent) {
             StoreMigrateRepresentationEvent ev = (StoreMigrateRepresentationEvent) event;
             MigrationModelManager.migrateImport(ev.getSession(), ev.getRealm(), ev.getRep(), ev.isSkipUserDependent());
         }
-    }    
+    }
 
-    public void setupScheduledTasks(final KeycloakSessionFactory sessionFactory) {
-        long interval = Config.scope("scheduled").getLong("interval", 900L) * 1000;
-
+    public static void setupScheduledTasks(final KeycloakSessionFactory sessionFactory) {
         try (KeycloakSession session = sessionFactory.create()) {
             TimerProvider timer = session.getProvider(TimerProvider.class);
             if (timer != null) {
-                scheduleTasks(sessionFactory, timer, interval);
+                scheduleTasks(sessionFactory, timer, getScheduledInterval());
             }
         }
     }
 
-    protected void scheduleTasks(KeycloakSessionFactory sessionFactory, TimerProvider timer, long interval) {
+    protected static void scheduleTasks(KeycloakSessionFactory sessionFactory, TimerProvider timer, long interval) {
         for (ScheduledTask task : getScheduledTasks()) {
             scheduleTask(timer, sessionFactory, task, interval);
         }
-
-        UserStorageSyncManager.bootstrapPeriodic(sessionFactory, timer);
     }
 
-    protected List<ScheduledTask> getScheduledTasks() {
-        return Arrays.asList(new ClearExpiredEvents(), new ClearExpiredAdminEvents(), new ClearExpiredClientInitialAccessTokens(), new ClearExpiredUserSessions());
+    protected static List<ScheduledTask> getScheduledTasks() {
+        return Arrays.asList(new ClearExpiredEvents(), new ClearExpiredAdminEvents(), new ClearExpiredClientInitialAccessTokens(), new ClearExpiredUserSessions(), new ClearExpiredIssuedVerifiableCredentials());
     }
 
-    protected void scheduleTask(TimerProvider timer, KeycloakSessionFactory sessionFactory, ScheduledTask task, long interval) {
+    protected static void scheduleTask(TimerProvider timer, KeycloakSessionFactory sessionFactory, ScheduledTask task, long interval) {
         timer.schedule(new ClusterAwareScheduledTaskRunner(sessionFactory, task, interval), interval);
         logger.debugf("Scheduled cluster task %s with interval %s ms", task.getTaskName(), interval);
+    }
+
+    public static void setupClearExpiredRevokedTokensScheduledTask(KeycloakSessionFactory sessionFactory) {
+        try (KeycloakSession session = sessionFactory.create()) {
+            TimerProvider timer = session.getProvider(TimerProvider.class);
+            if (timer != null) {
+                scheduleTask(timer, sessionFactory, new ClearExpiredRevokedTokens(), getScheduledInterval());
+            }
+        }
+    }
+
+    public static long getScheduledInterval() {
+        return Config.scope("scheduled").getLong("interval", 900L) * 1000;
     }
 
 }

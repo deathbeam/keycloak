@@ -16,6 +16,14 @@
  */
 package org.keycloak.saml.processing.core.parsers.util;
 
+import java.net.URI;
+import javax.xml.namespace.QName;
+import javax.xml.stream.XMLEventReader;
+import javax.xml.stream.events.Attribute;
+import javax.xml.stream.events.EndElement;
+import javax.xml.stream.events.StartElement;
+import javax.xml.stream.events.XMLEvent;
+
 import org.keycloak.dom.saml.v1.assertion.SAML11ActionType;
 import org.keycloak.dom.saml.v1.assertion.SAML11AttributeStatementType;
 import org.keycloak.dom.saml.v1.assertion.SAML11AttributeType;
@@ -52,14 +60,6 @@ import org.keycloak.saml.processing.core.saml.v1.SAML11Constants;
 import org.keycloak.saml.processing.core.saml.v2.util.XMLTimeUtil;
 
 import org.w3c.dom.Element;
-
-import javax.xml.namespace.QName;
-import javax.xml.stream.XMLEventReader;
-import javax.xml.stream.events.Attribute;
-import javax.xml.stream.events.EndElement;
-import javax.xml.stream.events.StartElement;
-import javax.xml.stream.events.XMLEvent;
-import java.net.URI;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
@@ -147,6 +147,7 @@ public class SAML11ParserUtil {
                 StaxParserUtil.validate(StaxParserUtil.getNextEndElement(xmlEventReader),
                         JBossSAMLConstants.SUBJECT_LOCALITY.get());
             } else if (SAML11Constants.AUTHORITY_BINDING.equals(tag)) {
+                startElement = StaxParserUtil.getNextStartElement(xmlEventReader);
                 Attribute authorityKindAttr = startElement.getAttributeByName(new QName(SAML11Constants.AUTHORITY_KIND));
                 if (authorityKindAttr == null)
                     throw logger.parserRequiredAttribute("AuthorityKind");
@@ -165,9 +166,11 @@ public class SAML11ParserUtil {
 
                 SAML11AuthorityBindingType authorityBinding = new SAML11AuthorityBindingType(authorityKind, location, binding);
                 authStat.add(authorityBinding);
-            } else
-                throw logger.parserUnknownTag("", startElement.getLocation());
-
+                StaxParserUtil.validate(StaxParserUtil.getNextEndElement(xmlEventReader),
+                        SAML11Constants.AUTHORITY_BINDING);
+            } else {
+                throw logger.parserUnknownTag(tag, startElement.getLocation());
+            }
         }
 
         return authStat;
@@ -207,7 +210,6 @@ public class SAML11ParserUtil {
                     String method = StaxParserUtil.getElementText(xmlEventReader);
                     subjectConfirmationType.addConfirmationMethod(URI.create(method));
                 } else if (startTag.equals(JBossSAMLConstants.SUBJECT_CONFIRMATION_DATA.get())) {
-                    startElement = StaxParserUtil.getNextStartElement(xmlEventReader);
                     SubjectConfirmationDataType subjectConfirmationData = parseSubjectConfirmationData(xmlEventReader);
                     subjectConfirmationType.setSubjectConfirmationData(subjectConfirmationData);
                 } else if (startTag.equals(JBossSAMLConstants.KEY_INFO.get())) {
@@ -215,6 +217,8 @@ public class SAML11ParserUtil {
                     subjectConfirmationType.setKeyInfo(keyInfo);
                 } else
                     throw logger.parserUnknownTag(startTag, startElement.getLocation());
+            } else {
+                throw logger.parserError(logger.parserFailed("Unexpected XML Event Type:" + Integer.valueOf(xmlEvent.getEventType())));
             }
         }
         return subjectConfirmationType;
@@ -545,7 +549,7 @@ public class SAML11ParserUtil {
             if (xmlEvent instanceof EndElement) {
                 tag = StaxParserUtil.getElementName((EndElement) xmlEvent);
                 if (tag.equals(WSTrustConstants.XMLDSig.KEYINFO)) {
-                    xmlEvent = StaxParserUtil.getNextEndElement(xmlEventReader);
+                    StaxParserUtil.getNextEndElement(xmlEventReader);
                     break;
                 } else
                     throw logger.parserUnknownEndElement(tag, xmlEvent.getLocation());
@@ -587,6 +591,8 @@ public class SAML11ParserUtil {
                 StaxParserUtil.validate(endElement, WSTrustConstants.XMLDSig.KEYVALUE);
 
                 keyInfo.addContent(keyValue);
+            } else {
+                throw logger.parserUnknownTag(tag, startElement.getLocation());
             }
         }
         return keyInfo;
@@ -606,7 +612,7 @@ public class SAML11ParserUtil {
             if (xmlEvent instanceof EndElement) {
                 tag = StaxParserUtil.getElementName((EndElement) xmlEvent);
                 if (tag.equals(WSTrustConstants.XMLDSig.RSA_KEYVALUE)) {
-                    xmlEvent = StaxParserUtil.getNextEndElement(xmlEventReader);
+                    StaxParserUtil.getNextEndElement(xmlEventReader);
                     break;
                 } else
                     throw logger.parserUnknownEndElement(tag, xmlEvent.getLocation());
@@ -710,6 +716,8 @@ public class SAML11ParserUtil {
                     query.setSubject((SAML11SubjectType) parser.parse(xmlEventReader));
                 } else
                     throw logger.parserUnknownTag(startTag, startElement.getLocation());
+            } else {
+                throw logger.parserError(logger.parserFailed("Unexpected XML Event Type:" + Integer.valueOf(xmlEvent.getEventType())));
             }
         }
         return query;
@@ -749,6 +757,8 @@ public class SAML11ParserUtil {
                     query.setSubject((SAML11SubjectType) parser.parse(xmlEventReader));
                 } else
                     throw logger.parserUnknownTag(startTag, startElement.getLocation());
+            } else {
+                throw logger.parserError(logger.parserFailed("Unexpected XML Event Type:" + Integer.valueOf(xmlEvent.getEventType())));
             }
         }
         return query;
@@ -801,6 +811,8 @@ public class SAML11ParserUtil {
                     query.add(action);
                 } else
                     throw logger.parserUnknownTag(startTag, startElement.getLocation());
+            } else {
+                throw logger.parserError(logger.parserFailed("Unexpected XML Event Type:" + Integer.valueOf(xmlEvent.getEventType())));
             }
         }
         return query;
